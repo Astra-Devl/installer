@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
-#  AUTO INSTALLER PTERODACTYL - ZERODEV
-#  Credit : zerodev | Telegram : t.me/ext4you
+#  AUTO INSTALLER PTERODACTYL - ASTRACODEX 
+#  Credit : AstraCodeX | WhatsApp : wa.me/6287748920504
 # ============================================================
 
 # ---------- WARNA ----------
