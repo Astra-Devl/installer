@@ -195,7 +195,7 @@ EOF
     echo -e "  ${CYAN}[1]${NC}  Stellar"
     echo -e "  ${CYAN}[2]${NC}  Billing"
     echo -e "  ${CYAN}[3]${NC}  Enigma"
-    echo -e "  ${CYAN}[4]${NC}  Claymorphism"
+    echo -e "  ${CYAN}[4]${NC}  NeoBrutalism"
     echo -e "  ${CYAN}[5]${NC}  Elysium"
     echo -e "  ${CYAN}[6]${NC}  Nebula ${YELLOW}(butuh Blueprint)${NC}"
     echo -e "  ${CYAN}[7]${NC}  Blueprint Framework"
@@ -211,7 +211,7 @@ EOF
       1) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/stellar.zip"; THEME_NAME="stellar"; break ;;
       2) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/billing.zip"; THEME_NAME="billing"; break ;;
       3) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/enigma.zip"; THEME_NAME="enigma"; break ;;
-      4) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/Claymorphism.zip"; THEME_NAME="Claymorphism"; break ;;
+      4) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/NeoBrutalism.zip"; THEME_NAME="NeoBrutalism"; break ;;
       5) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/Elysium.zip"; THEME_NAME="ElysiumTheme"; break ;;
       6) THEME_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/nebulaptero.zip"; THEME_NAME="nebulaptero"; break ;;
       7) THEME_URL=""; THEME_NAME="blueprint"; break ;;
