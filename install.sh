@@ -18,7 +18,27 @@ NC='\033[0m'
 # ============================================================
 if [ "$EUID" -ne 0 ]; then
   echo -e "${YELLOW}[!] Script ini perlu akses root. Menjalankan ulang dengan sudo...${NC}"
-  exec sudo bash "$0" "$@"
+
+  # Jika dijalankan lewat "bash <(curl ...)" atau "curl ... | bash",
+  # $0 bukan file fisik (mis. /dev/fd/63) sehingga tidak bisa dibuka lagi
+  # oleh proses sudo yang baru. Solusinya: salin isi script ke file
+  # sementara di /tmp dulu, baru dijalankan ulang dengan sudo dari sana.
+  TMP_SCRIPT=$(mktemp /tmp/astra-installer.XXXXXX.sh)
+
+  if ! cat "$0" > "$TMP_SCRIPT" 2>/dev/null || [ ! -s "$TMP_SCRIPT" ]; then
+    cat /dev/stdin > "$TMP_SCRIPT" 2>/dev/null
+  fi
+
+  if [ ! -s "$TMP_SCRIPT" ]; then
+    echo -e "${RED}[x] Gagal menyiapkan ulang script untuk dijalankan sebagai root.${NC}"
+    echo -e "${YELLOW}    Coba jalankan dengan cara berikut sebagai gantinya:${NC}"
+    echo -e "    curl -s https://raw.githubusercontent.com/Astra-Devl/installer/main/install.sh -o install.sh && sudo bash install.sh"
+    rm -f "$TMP_SCRIPT"
+    exit 1
+  fi
+
+  chmod +x "$TMP_SCRIPT"
+  exec sudo bash "$TMP_SCRIPT" "$@"
 fi
 
 # ============================================================
