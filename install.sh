@@ -570,52 +570,106 @@ EOF
   fi
 
   # ---------- NeoBrutalism ----------
-  if [ "$SELECT_THEME" = "4" ]; then
+    if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
-    cd "$USER_HOME" || return
-    $SUDO apt install -y unzip
-    rm -rf "$USER_HOME/neo-tmp"
-    unzip -oq "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/neo-tmp"
 
-    if [ ! -f "$USER_HOME/neo-tmp/pterodactyl/artisan" ] && \
-       [ ! -f "$USER_HOME/neo-tmp/pterodactyl/routes/admin.php" ]; then
-      err_msg "Struktur file NeoBrutalism tidak valid."
-      rm -rf "$USER_HOME/neo-tmp"
+    NEO_TMP="$USER_HOME/neo-tmp"
+    NEO_ZIP="$USER_HOME/${THEME_NAME}.zip"
+    NEO_SRC="$NEO_TMP/pterodactyl"
+    PANEL_PARENT="$(dirname "$PANEL_DIR")"
+    PANEL_BASE="$(basename "$PANEL_DIR")"
+    BACKUP_FILE="$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+
+    neo_fail() {
+      err_msg "$1"
+      $SUDO rm -rf "$NEO_TMP"
       pause_clear
+    }
+
+    # ---------- Pengecekan awal ----------
+    if [ ! -f "$PANEL_DIR/artisan" ] || [ ! -f "$PANEL_DIR/routes/admin.php" ]; then
+      neo_fail "Pterodactyl Panel tidak ditemukan di $PANEL_DIR."
       return
     fi
 
-    if [ ! -f "$USER_HOME/neo-tmp/pterodactyl/resources/views/partials/admin/neo-style.blade.php" ]; then
-      err_msg "File neo-style.blade.php tidak ditemukan."
-      rm -rf "$USER_HOME/neo-tmp"
-      pause_clear
+    if [ ! -f "$NEO_ZIP" ]; then
+      neo_fail "File $NEO_ZIP tidak ditemukan."
       return
     fi
 
+    command -v unzip >/dev/null 2>&1 || $SUDO apt install -y unzip
+
+    $SUDO rm -rf "$NEO_TMP"
+    mkdir -p "$NEO_TMP"
+    if ! $SUDO unzip -oq "$NEO_ZIP" -d "$NEO_TMP"; then
+      neo_fail "Gagal mengekstrak $NEO_ZIP."
+      return
+    fi
+
+    # Zip tema hanya berisi file overlay (bukan panel utuh), jadi yang dicek file milik tema.
+    for NEO_REQUIRED in \
+      "routes/theme-admin.php" \
+      "app/Services/Theme/ThemeSettings.php" \
+      "app/Services/Theme/ThemePresets.php" \
+      "app/Http/Middleware/Admin/NeoProtection.php" \
+      "resources/views/partials/admin/neo-style.blade.php" \
+      "resources/scripts/components/elements/neo/StatusPill.tsx"; do
+      if [ ! -f "$NEO_SRC/$NEO_REQUIRED" ]; then
+        neo_fail "Struktur NeoBrutalism tidak valid, file hilang: $NEO_REQUIRED"
+        return
+      fi
+    done
+
+    # ---------- Backup (tanpa node_modules/vendor agar cepat & kecil) ----------
     info_msg "Membuat backup Pterodactyl Panel..."
-    local BACKUP_NEO="$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-    $SUDO tar -czf "$BACKUP_NEO" -C /var/www pterodactyl
+    if ! $SUDO tar -czf "$BACKUP_FILE" \
+      --exclude="$PANEL_BASE/node_modules" \
+      --exclude="$PANEL_BASE/vendor" \
+      --exclude="$PANEL_BASE/storage/logs" \
+      -C "$PANEL_PARENT" "$PANEL_BASE"; then
+      neo_fail "Backup gagal, instalasi dibatalkan (panel belum diubah)."
+      return
+    fi
 
+    # ---------- Pasang file tema ----------
     info_msg "Memasang tema NeoBrutalism..."
-    $SUDO cp -a "$USER_HOME/neo-tmp/pterodactyl/." "$PANEL_DIR/"
+    $SUDO cp -r "$NEO_SRC/." "$PANEL_DIR/"
+    $SUDO mkdir -p "$PANEL_DIR/public/uploads/theme"
 
     cd "$PANEL_DIR" || return
-    local ADMIN_ROUTES="$PANEL_DIR/routes/admin.php"
+
+    # Daftarkan routes/theme-admin.php di PALING BAWAH routes/admin.php
+    ADMIN_ROUTES="$PANEL_DIR/routes/admin.php"
     $SUDO sed -i "/theme-admin\.php/d" "$ADMIN_ROUTES"
-    echo "require base_path('routes/theme-admin.php');" \
+    printf "\nrequire base_path('routes/theme-admin.php');\n" \
       | $SUDO tee -a "$ADMIN_ROUTES" > /dev/null
 
+    # ---------- Frontend ----------
     install_nodejs22
+    command -v yarn >/dev/null 2>&1 || $SUDO npm install -g yarn
 
     info_msg "Menginstal dependency frontend..."
-    $SUDO yarn add react-feather
+    if ! grep -q '"react-feather"' package.json; then
+      $SUDO yarn add react-feather || { neo_fail "Gagal menambah react-feather. Backup: $BACKUP_FILE"; return; }
+    fi
+    $SUDO yarn install --frozen-lockfile || $SUDO yarn install \
+      || { neo_fail "yarn install gagal. Backup: $BACKUP_FILE"; return; }
 
+    # ---------- Database ----------
     info_msg "Menjalankan migrasi database..."
-    $SUDO php artisan migrate --force
+    if ! $SUDO php artisan migrate --force; then
+      neo_fail "Migrasi gagal. Backup: $BACKUP_FILE"
+      return
+    fi
 
-    info_msg "Build frontend..."
-    $SUDO yarn build:production
+    # ---------- Build ----------
+    info_msg "Build frontend (beberapa menit)..."
+    if ! $SUDO env NODE_OPTIONS=--openssl-legacy-provider yarn build:production; then
+      neo_fail "Build frontend gagal. Backup: $BACKUP_FILE"
+      return
+    fi
 
+    # ---------- Cache & permission ----------
     info_msg "Membersihkan cache Laravel..."
     $SUDO php artisan view:clear
     $SUDO php artisan config:clear
@@ -623,26 +677,22 @@ EOF
     $SUDO php artisan cache:clear
 
     info_msg "Mengatur permission..."
-    $SUDO chown -R www-data:www-data \
-      "$PANEL_DIR/storage" \
-      "$PANEL_DIR/bootstrap/cache"
-    if [ -d "$PANEL_DIR/public/uploads/theme" ]; then
-      $SUDO chown -R www-data:www-data \
-        "$PANEL_DIR/public/uploads/theme"
-    fi
+    # cp & artisan dijalankan sebagai root: seluruh panel dikembalikan ke www-data
+    $SUDO chown -R www-data:www-data "$PANEL_DIR"
 
     info_msg "Restart queue workers..."
     $SUDO php artisan queue:restart || true
 
     info_msg "Menghapus file sementara..."
-    rm -f "$USER_HOME/${THEME_NAME}.zip"
-    rm -rf "$USER_HOME/neo-tmp"
+    $SUDO rm -f "$NEO_ZIP"
+    $SUDO rm -rf "$NEO_TMP"
 
     ok_msg "INSTALL SUCCESS"
     echo "Theme       : NeoBrutalism"
     echo "Stylesheet  : neo-style.blade.php"
-    echo "Admin Theme : /admin/theme"
-    echo "Backup      : $BACKUP_NEO"
+    echo "Admin Theme : /admin/theme  (Quick Presets, Live Preview, Elements)"
+    echo "Backup      : $BACKUP_FILE"
+    echo "Catatan     : tekan Ctrl+F5 di browser agar CSS/JS baru termuat."
     pause_clear
     return
   fi
