@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-#  AUTO INSTALLER PTERODACTYL - ASTRACODE
+#  AUTO INSTALLER PTERODACTYL - ZERODEV
 #  Credit : AstraCodeX | WhatsApp : wa.me/6287748920504
 # ============================================================
 
@@ -12,10 +12,36 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+# ---------- USER DETECTION ----------
+# Deteksi user asli (bukan root), support root@, ubuntu@, custom@
+if [ -n "$SUDO_USER" ]; then
+  REAL_USER="$SUDO_USER"
+elif [ "$(id -u)" -eq 0 ]; then
+  REAL_USER="root"
+else
+  REAL_USER="$USER"
+fi
+
+# Home directory dinamis
+if [ "$REAL_USER" = "root" ]; then
+  USER_HOME="/root"
+else
+  USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+  [ -z "$USER_HOME" ] && USER_HOME="/home/$REAL_USER"
+fi
+
 # ---------- GLOBAL VAR ----------
 PANEL_DIR="/var/www/pterodactyl"
-WORK_DIR="/root/protect-tmp"
+WORK_DIR="$USER_HOME/protect-tmp"
 EXISTING_LOCK="$PANEL_DIR/.protect.lock"
+
+# ---------- SUDO HELPER ----------
+# Gunakan sudo hanya jika bukan root
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
 
 # ============================================================
 #  FUNGSI BANTUAN
@@ -28,21 +54,10 @@ banner() {
   echo -e ""
 }
 
-ok_msg() {
-  echo -e "${GREEN}[✓] $1${NC}"
-}
-
-err_msg() {
-  echo -e "${RED}[x] $1${NC}"
-}
-
-warn_msg() {
-  echo -e "${YELLOW}[!] $1${NC}"
-}
-
-info_msg() {
-  echo -e "${CYAN}[i] $1${NC}"
-}
+ok_msg()   { echo -e "${GREEN}[✓] $1${NC}"; }
+err_msg()  { echo -e "${RED}[x] $1${NC}"; }
+warn_msg() { echo -e "${YELLOW}[!] $1${NC}"; }
+info_msg() { echo -e "${CYAN}[i] $1${NC}"; }
 
 fail() {
   err_msg "$1"
@@ -56,17 +71,17 @@ pause_clear() {
 }
 
 fix_permission() {
-  chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null
-  find "$PANEL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null
-  find "$PANEL_DIR" -type f -exec chmod 644 {} \; 2>/dev/null
+  $SUDO chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null
+  $SUDO find "$PANEL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null
+  $SUDO find "$PANEL_DIR" -type f -exec chmod 644 {} \; 2>/dev/null
 }
 
 clear_cache() {
   cd "$PANEL_DIR" || return
-  php artisan view:clear   >/dev/null 2>&1
-  php artisan config:clear >/dev/null 2>&1
-  php artisan route:clear  >/dev/null 2>&1
-  php artisan cache:clear  >/dev/null 2>&1
+  $SUDO php artisan view:clear   >/dev/null 2>&1
+  $SUDO php artisan config:clear >/dev/null 2>&1
+  $SUDO php artisan route:clear  >/dev/null 2>&1
+  $SUDO php artisan cache:clear  >/dev/null 2>&1
 }
 
 # ============================================================
@@ -89,8 +104,8 @@ EOF
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e ""
   echo -e "${GREEN}  ⚡ Selamat datang di Auto Installer AstraCodeX${NC}"
-  echo -e "  Script ini dibuat untuk mempermudah instalasi"
-  echo -e "  theme, panel, dan node Pterodactyl secara otomatis."
+  echo -e "  ${CYAN}User terdeteksi : ${YELLOW}${REAL_USER}@$(hostname)${NC}"
+  echo -e "  ${CYAN}Home directory : ${YELLOW}${USER_HOME}${NC}"
   echo -e ""
   echo -e "${RED}  ⚠ Dilarang Keras Share Bebas Tanpa Izin!${NC}"
   echo -e ""
@@ -107,7 +122,7 @@ EOF
 # ============================================================
 install_jq() {
   banner "UPDATE & INSTALL JQ                           "
-  sudo apt update && sudo apt install -y jq
+  $SUDO apt update && $SUDO apt install -y jq
   if [ $? -eq 0 ]; then
     ok_msg "INSTALL JQ BERHASIL"
   else
@@ -134,7 +149,6 @@ EOF
     echo -e "${NC}"
     echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
     echo -e "${BLUE}                  © AstraCodeX | zerodev${NC}"
-    echo -e "${BLUE}              Telegram : t.me/ext4you${NC}"
     echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
     echo -e ""
     echo -e "${GREEN}  [ PILIH THEME YANG INGIN DIINSTALL ]${NC}"
@@ -170,45 +184,45 @@ EOF
   # ===================== BLUEPRINT =====================
   if [ "$SELECT_THEME" = "7" ]; then
     banner "INSTALL BLUEPRINT FRAMEWORK                   "
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg zip unzip git curl wget
+    $SUDO apt-get update
+    $SUDO apt-get install -y ca-certificates curl gnupg zip unzip git curl wget
 
-    sudo mkdir -p /etc/apt/keyrings
+    $SUDO mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+      $SUDO gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      sudo tee /etc/apt/sources.list.d/nodesource.list
-    sudo apt-get update
-    sudo apt-get install -y nodejs
-    sudo npm i -g yarn
+      $SUDO tee /etc/apt/sources.list.d/nodesource.list
+    $SUDO apt-get update
+    $SUDO apt-get install -y nodejs
+    $SUDO npm i -g yarn
 
     cd "$PANEL_DIR" || return
-    yarn
-    yarn add cross-env
+    $SUDO yarn
+    $SUDO yarn add cross-env
 
     wget "$(curl -s https://api.github.com/repos/BlueprintFramework/framework/releases/latest | grep 'browser_download_url' | cut -d '"' -f 4)" -O release.zip
-    mv release.zip "$PANEL_DIR/release.zip"
+    $SUDO mv release.zip "$PANEL_DIR/release.zip"
     cd "$PANEL_DIR" || return
-    unzip -o release.zip
+    $SUDO unzip -o release.zip
 
     FOLDER="$PANEL_DIR"
     WEBUSER="www-data"; USERSHELL="/bin/bash"; PERMISSIONS="www-data:www-data"
 
-    sed -i -E \
+    $SUDO sed -i -E \
       -e "s|WEBUSER=\"www-data\" #;|WEBUSER=\"$WEBUSER\" #;|g" \
       -e "s|USERSHELL=\"/bin/bash\" #;|USERSHELL=\"$USERSHELL\" #;|g" \
       -e "s|OWNERSHIP=\"www-data:www-data\" #;|OWNERSHIP=\"$PERMISSIONS\" #;|g" \
       "$FOLDER/blueprint.sh"
 
-    chmod +x blueprint.sh
-    bash blueprint.sh
+    $SUDO chmod +x blueprint.sh
+    $SUDO bash blueprint.sh
 
     ok_msg "Blueprint berhasil diinstall."
     pause_clear
     return
   fi
 
-  # ===================== NEBULA (butuh Blueprint) =====================
+  # ===================== NEBULA =====================
   if [ "$SELECT_THEME" = "6" ]; then
     if [ ! -f "$PANEL_DIR/blueprint.sh" ] && ! command -v blueprint >/dev/null 2>&1; then
       err_msg "Blueprint belum diinstall. Silakan pilih opsi 7 terlebih dahulu."
@@ -217,24 +231,24 @@ EOF
     fi
 
     banner "INSTALL NEBULA THEME                          "
-    cd /root || return
-    wget -q "$THEME_URL" -O /root/nebulaptero.zip
-    rm -rf /root/nebula-tmp
-    unzip -o /root/nebulaptero.zip -d /root/nebula-tmp
+    cd "$USER_HOME" || return
+    wget -q "$THEME_URL" -O "$USER_HOME/nebulaptero.zip"
+    rm -rf "$USER_HOME/nebula-tmp"
+    unzip -o "$USER_HOME/nebulaptero.zip" -d "$USER_HOME/nebula-tmp"
 
-    BLUEPRINT_ARC=$(find /root/nebula-tmp -name "*.blueprint" | head -n1)
+    BLUEPRINT_ARC=$(find "$USER_HOME/nebula-tmp" -name "*.blueprint" | head -n1)
     if [ -z "$BLUEPRINT_ARC" ]; then
       err_msg "File .blueprint tidak ditemukan di dalam zip Nebula."
-      rm -rf /root/nebula-tmp /root/nebulaptero.zip
+      rm -rf "$USER_HOME/nebula-tmp" "$USER_HOME/nebulaptero.zip"
       return
     fi
 
     cd "$PANEL_DIR" || return
-    sudo cp "$BLUEPRINT_ARC" "$PANEL_DIR/nebula.blueprint"
-    blueprint -install nebula
+    $SUDO cp "$BLUEPRINT_ARC" "$PANEL_DIR/nebula.blueprint"
+    $SUDO blueprint -install nebula
 
-    cd "$PANEL_DIR" && sudo rm -f nebula.blueprint
-    rm -rf /root/nebula-tmp /root/nebulaptero.zip
+    cd "$PANEL_DIR" && $SUDO rm -f nebula.blueprint
+    rm -rf "$USER_HOME/nebula-tmp" "$USER_HOME/nebulaptero.zip"
 
     ok_msg "Nebula Theme berhasil diinstall."
     pause_clear
@@ -244,27 +258,26 @@ EOF
   # ===================== ELYSIUM =====================
   if [ "$SELECT_THEME" = "5" ]; then
     banner "INSTALL ELYSIUM THEME                         "
-    cd /root || return
-    wget -q "$THEME_URL" -O /root/ElysiumTheme.zip
-    sudo mv /root/ElysiumTheme.zip /var/www/
-    unzip -o /var/www/ElysiumTheme.zip -d /var/www/
-    rm -f /var/www/ElysiumTheme.zip
+    cd "$USER_HOME" || return
+    wget -q "$THEME_URL" -O "$USER_HOME/ElysiumTheme.zip"
+    $SUDO mv "$USER_HOME/ElysiumTheme.zip" /var/www/
+    $SUDO unzip -o /var/www/ElysiumTheme.zip -d /var/www/
+    $SUDO rm -f /var/www/ElysiumTheme.zip
 
-    # Node.js 22 (URL sudah diperbaiki)
-    sudo mkdir -p /etc/apt/keyrings
+    $SUDO mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+      $SUDO gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      sudo tee /etc/apt/sources.list.d/nodesource.list
-    sudo apt update
-    sudo apt install -y nodejs npm
-    sudo npm i -g yarn
+      $SUDO tee /etc/apt/sources.list.d/nodesource.list
+    $SUDO apt update
+    $SUDO apt install -y nodejs npm
+    $SUDO npm i -g yarn
 
     cd "$PANEL_DIR" || return
-    yarn
-    yarn build:production
-    php artisan migrate --force
-    php artisan view:clear
+    $SUDO yarn
+    $SUDO yarn build:production
+    $SUDO php artisan migrate --force
+    $SUDO php artisan view:clear
 
     ok_msg "Tema Elysium berhasil diinstall."
     pause_clear
@@ -272,27 +285,27 @@ EOF
   fi
 
   # ===================== THEME LAMA (1-4) =====================
-  if [ -e /root/pterodactyl ]; then
-    sudo rm -rf /root/pterodactyl
+  if [ -e "$USER_HOME/pterodactyl" ]; then
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
   fi
-  cd /root || return
-  wget -q "$THEME_URL" -O "/root/${THEME_NAME}.zip"
-  sudo unzip -o "/root/${THEME_NAME}.zip" -d /root/
+  cd "$USER_HOME" || return
+  wget -q "$THEME_URL" -O "$USER_HOME/${THEME_NAME}.zip"
+  $SUDO unzip -o "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/"
 
   # ---------- STELLAR ----------
   if [ "$SELECT_THEME" = "1" ]; then
     banner "INSTALL THEME STELLAR                         "
-    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-    sudo npm i -g yarn
+    $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
+    $SUDO apt install -y nodejs
+    $SUDO npm i -g yarn
     cd "$PANEL_DIR" || return
-    yarn add react-feather
-    php artisan migrate --force
-    yarn build:production
-    php artisan view:clear
-    sudo rm -f "/root/${THEME_NAME}.zip"
-    sudo rm -rf /root/pterodactyl
+    $SUDO yarn add react-feather
+    $SUDO php artisan migrate --force
+    $SUDO yarn build:production
+    $SUDO php artisan view:clear
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -301,18 +314,18 @@ EOF
   # ---------- BILLING ----------
   if [ "$SELECT_THEME" = "2" ]; then
     banner "INSTALL THEME BILLING                         "
-    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-    sudo npm i -g yarn
+    $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
+    $SUDO apt install -y nodejs
+    $SUDO npm i -g yarn
     cd "$PANEL_DIR" || return
-    yarn add react-feather
-    php artisan billing:install stable
-    php artisan migrate --force
-    yarn build:production
-    php artisan view:clear
-    sudo rm -f "/root/${THEME_NAME}.zip"
-    sudo rm -rf /root/pterodactyl
+    $SUDO yarn add react-feather
+    $SUDO php artisan billing:install stable
+    $SUDO php artisan migrate --force
+    $SUDO yarn build:production
+    $SUDO php artisan view:clear
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -328,24 +341,24 @@ EOF
     echo -e "${YELLOW}Masukkan link channel (https://...) : ${NC}"
     read -r LINK_CHNL
 
-    DASH_FILE="/root/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
+    DASH_FILE="$USER_HOME/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
     if [ -f "$DASH_FILE" ]; then
-      sudo sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
-      sudo sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
-      sudo sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
+      $SUDO sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
+      $SUDO sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
+      $SUDO sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
     fi
 
-    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-    sudo npm i -g yarn
+    $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
+    $SUDO apt install -y nodejs
+    $SUDO npm i -g yarn
     cd "$PANEL_DIR" || return
-    yarn add react-feather
-    php artisan migrate --force
-    yarn build:production
-    php artisan view:clear
-    sudo rm -f "/root/${THEME_NAME}.zip"
-    sudo rm -rf /root/pterodactyl
+    $SUDO yarn add react-feather
+    $SUDO php artisan migrate --force
+    $SUDO yarn build:production
+    $SUDO php artisan view:clear
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     sleep 3
     clear
@@ -355,35 +368,35 @@ EOF
   # ---------- NeoBrutalism ----------
   if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
-    cd /root || return
-    sudo apt install -y unzip
-    rm -rf /root/neo-tmp
-    sudo unzip -oq "/root/${THEME_NAME}.zip" -d /root/neo-tmp
+    cd "$USER_HOME" || return
+    $SUDO apt install -y unzip
+    rm -rf "$USER_HOME/neo-tmp"
+    $SUDO unzip -oq "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/neo-tmp"
 
-    sudo tar -czf "/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var/www pterodactyl
+    $SUDO tar -czf "$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var/www pterodactyl
 
-    sudo cp -rfT /root/clay-tmp/pterodactyl "$PANEL_DIR"
+    $SUDO cp -rfT "$USER_HOME/clay-tmp/pterodactyl" "$PANEL_DIR"
 
     cd "$PANEL_DIR" || return
     grep -q "theme-admin.php" routes/admin.php || \
-      echo "require __DIR__ . '/theme-admin.php';" | sudo tee -a routes/admin.php > /dev/null
+      echo "require __DIR__ . '/theme-admin.php';" | $SUDO tee -a routes/admin.php > /dev/null
 
-    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt install -y nodejs
-    sudo npm i -g yarn
+    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
+    $SUDO apt install -y nodejs
+    $SUDO npm i -g yarn
 
-    yarn add react-feather
-    php artisan migrate --force
-    yarn build:production
+    $SUDO yarn add react-feather
+    $SUDO php artisan migrate --force
+    $SUDO yarn build:production
 
-    php artisan view:clear
-    php artisan config:clear
-    php artisan route:clear
-    php artisan queue:restart
-    sudo chown -R www-data:www-data "$PANEL_DIR"/*
+    $SUDO php artisan view:clear
+    $SUDO php artisan config:clear
+    $SUDO php artisan route:clear
+    $SUDO php artisan queue:restart
+    $SUDO chown -R www-data:www-data "$PANEL_DIR"/*
 
-    sudo rm -f "/root/${THEME_NAME}.zip"
-    sudo rm -rf /root/neo-tmp
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/neo-tmp"
 
     ok_msg "INSTALL SUCCESS"
     pause_clear
@@ -398,7 +411,7 @@ EOF
 # ============================================================
 uninstall_theme() {
   banner "DELETE THEME                                 "
-  bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/refs/heads/main/repair.sh)
+  $SUDO bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/refs/heads/main/repair.sh)
   ok_msg "DELETE THEME SUKSES"
   pause_clear
 }
@@ -425,7 +438,6 @@ install_protect() {
     return
   }
 
-  # Validasi file bukan HTML 404 dan ukurannya wajar
   if [ ! -s protect.zip ] || ! unzip -tq protect.zip >/dev/null 2>&1; then
     err_msg "File protect.zip tidak valid (kemungkinan 404 / bukan zip)."
     rm -rf "$WORK_DIR"
@@ -448,30 +460,28 @@ install_protect() {
   fi
 
   info_msg "Membuat backup panel..."
-  BACKUP_FILE="/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
-  tar -czf "$BACKUP_FILE" -C /var/www pterodactyl || { err_msg "Gagal membuat backup."; return; }
+  BACKUP_FILE="$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+  $SUDO tar -czf "$BACKUP_FILE" -C /var/www pterodactyl || { err_msg "Gagal membuat backup."; return; }
 
-  # Daftar file yang akan ditimpa
   FILE_LIST="$WORK_DIR/filelist.txt"
   ( cd "$WORK_DIR/pterodactyl" && find . -type f ) > "$FILE_LIST"
 
-  echo "$BACKUP_FILE" > "$EXISTING_LOCK"
+  echo "$BACKUP_FILE" | $SUDO tee "$EXISTING_LOCK" > /dev/null
 
   info_msg "Menyalin file proteksi ke panel..."
-  cp -rfT "$WORK_DIR/pterodactyl" "$PANEL_DIR" || {
+  $SUDO cp -rfT "$WORK_DIR/pterodactyl" "$PANEL_DIR" || {
     err_msg "Gagal menyalin file proteksi."
-    tar -xzf "$BACKUP_FILE" -C /var/www
+    $SUDO tar -xzf "$BACKUP_FILE" -C /var/www
     fix_permission
     return
   }
 
-  # Cek syntax PHP
   info_msg "Memeriksa syntax PHP..."
   SYNTAX_OK=1
   while read -r f; do
     case "$f" in
       *.php)
-        if ! php -l "$PANEL_DIR/$f" >/dev/null 2>&1; then
+        if ! $SUDO php -l "$PANEL_DIR/$f" >/dev/null 2>&1; then
           err_msg "Syntax error: $f"
           SYNTAX_OK=0
         fi
@@ -481,7 +491,7 @@ install_protect() {
 
   if [ "$SYNTAX_OK" -eq 0 ]; then
     warn_msg "Rollback ke file asli..."
-    tar -xzf "$BACKUP_FILE" -C /var/www
+    $SUDO tar -xzf "$BACKUP_FILE" -C /var/www
     fix_permission
     err_msg "Install dibatalkan karena ada syntax error."
     sleep 2
@@ -514,7 +524,7 @@ restore_protect() {
     return
   fi
 
-  BACKUP_FILE=$(cat "$EXISTING_LOCK")
+  BACKUP_FILE=$($SUDO cat "$EXISTING_LOCK")
   if [ ! -f "$BACKUP_FILE" ]; then
     err_msg "Backup file tidak ditemukan: $BACKUP_FILE"
     sleep 2
@@ -522,12 +532,12 @@ restore_protect() {
   fi
 
   warn_msg "Merestore panel dari backup: $BACKUP_FILE"
-  tar -xzf "$BACKUP_FILE" -C /var/www
+  $SUDO tar -xzf "$BACKUP_FILE" -C /var/www
 
   fix_permission
   clear_cache
 
-  rm -f "$EXISTING_LOCK"
+  $SUDO rm -f "$EXISTING_LOCK"
   ok_msg "Proteksi berhasil dilepas."
   pause_clear
 }
@@ -547,12 +557,12 @@ create_node() {
 
   cd "$PANEL_DIR" || { err_msg "Direktori tidak ditemukan"; return; }
 
-  php artisan p:location:make <<EOF
+  $SUDO php artisan p:location:make <<EOF
 $location_name
 $location_description
 EOF
 
-  php artisan p:node:make <<EOF
+  $SUDO php artisan p:node:make <<EOF
 $node_name
 $location_description
 $locid
@@ -595,7 +605,7 @@ install_panel() {
 
   info_msg "Memproses Instalasi Panel..."
 
-  bash <(curl -s https://pterodactyl-installer.se) <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 0
 y
 y
@@ -616,7 +626,7 @@ EOF
 
   info_msg "Panel selesai. Memproses Wings..."
 
-  bash <(curl -s https://pterodactyl-installer.se) <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 1
 y
 ${domainpanel}
@@ -628,7 +638,7 @@ y
 EOF
 
   info_msg "Membuat Node Otomatis di Panel..."
-  bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/main/createnode.sh) <<EOF
+  $SUDO bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/main/createnode.sh) <<EOF
 Singapore
 Node By AstraCodeX
 ${domainnode}
@@ -656,7 +666,7 @@ EOF
 # ============================================================
 uninstall_panel() {
   banner "UNINSTALL PANEL                              "
-  bash <(curl -s https://pterodactyl-installer.se) <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 y
 y
 y
@@ -674,13 +684,12 @@ configure_wings() {
   read -p "Masukkan token Configure menjalankan wings: " wings
 
   if [[ "$wings" == *"systemctl"* ]] || [[ "$wings" == *"wings"* ]]; then
-    # Hanya izinkan token yang jelas command-nya
-    bash -c "$wings"
+    $SUDO bash -c "$wings"
   else
     warn_msg "Token tidak valid, coba jalankan manual."
   fi
 
-  sudo systemctl start wings
+  $SUDO systemctl start wings
   ok_msg "CONFIGURE WINGS SUKSES"
   pause_clear
 }
@@ -695,7 +704,7 @@ hackback_panel() {
 
   cd "$PANEL_DIR" || { err_msg "Direktori tidak ditemukan"; return; }
 
-  php artisan p:user:make <<EOF
+  $SUDO php artisan p:user:make <<EOF
 yes
 hackback@gmail.com
 $user
@@ -722,7 +731,7 @@ ubahpw_vps() {
     return
   fi
 
-  echo "root:$pw" | sudo chpasswd
+  echo "root:$pw" | $SUDO chpasswd
   ok_msg "GANTI PW VPS SUKSES"
   sleep 2
 }
@@ -733,9 +742,6 @@ ubahpw_vps() {
 display_welcome
 install_jq
 
-# ============================================================
-#  MAIN MENU - SIMPLE & CLEAN
-# ============================================================
 main_menu() {
   clear
   echo -e "${CYAN}"
@@ -749,7 +755,8 @@ EOF
   echo -e "${NC}"
   echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
   echo -e "${BLUE}                  © AstraCodeX | zerodev${NC}"
-  echo -e "${BLUE}              Telegram : t.me/ext4you${NC}"
+  echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
+  echo -e "${CYAN}  User : ${YELLOW}${REAL_USER}@$(hostname)${NC}"
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e ""
   echo -e "${GREEN}  [ THEME MANAGEMENT ]${NC}"
