@@ -14,7 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ---------- AUTH CONFIG ----------
-ACCESS_PASSWORD="94c82da2c8f1406ea966a92f887e5827d5aba8f4332e3dee580e54a422163062"
+ACCESS_PASSWORD="QXN0cmFDb2RlWA=="
 MAX_ATTEMPTS=3
 
 # ============================================================
@@ -93,54 +93,63 @@ clear_cache() {
 #  AUTH GATE (Middleware API Key)
 # ============================================================
 auth_gate() {
-  local attempts=0
-  local input
+    local attempts=0
+    local input
+    local input_hash
 
-  while [ "$attempts" -lt "$MAX_ATTEMPTS" ]; do
-    clear
-    echo -e "${CYAN}"
-    cat << "EOF"
+    while [ "$attempts" -lt "$MAX_ATTEMPTS" ]; do
+        clear
+
+        echo -e "${CYAN}"
+        cat << "EOF"
     ___         __             ______          __        _  __
    /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
-  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   / 
- / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |  
-/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|  
+  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   /
+ / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |
+/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|
 EOF
-    echo -e "${NC}"
-    echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
-    echo -e "${BLUE}                  © AstraCodeX${NC}"
-    echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
-    echo -e ""
-    echo -e "${RED}              🔒 SECURITY GATE - AUTH REQUIRED 🔒${NC}"
-    echo -e ""
-    echo -e "${YELLOW}  Script ini dilindungi oleh Access Key.${NC}"
-    echo -e "${YELLOW}  Masukkan access key untuk melanjutkan.${NC}"
-    echo -e ""
-    echo -e "${CYAN}  Attempt tersisa: ${YELLOW}$((MAX_ATTEMPTS - attempts))${NC}"
-    echo -e ""
-    echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
-    echo -ne "${YELLOW}  ➜ Access Key : ${NC}"
-    read -rs input
-    echo -e ""
+        echo -e "${NC}"
 
-    if [ "$input" = "$ACCESS_PASSWORD" ]; then
-      echo -e ""
-      ok_msg "Akses diterima. Memuat script..."
-      sleep 1
-      clear
-      return 0
-    else
-      attempts=$((attempts + 1))
-      echo -e ""
-      err_msg "Access Key salah! Percobaan: $attempts/$MAX_ATTEMPTS"
-      sleep 2
-    fi
-  done
+        echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
+        echo -e "${BLUE}                  © AstraCodeX${NC}"
+        echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
+        echo
+        echo -e "${RED}              🔒 SECURITY GATE - AUTH REQUIRED 🔒${NC}"
+        echo
+        echo -e "${YELLOW}  Script ini dilindungi oleh Access Key.${NC}"
+        echo -e "${YELLOW}  Masukkan access key untuk melanjutkan.${NC}"
+        echo
+        echo -e "${CYAN}  Attempt tersisa: ${YELLOW}$((MAX_ATTEMPTS - attempts))${NC}"
+        echo
+        echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
+        echo -ne "${YELLOW}  ➜ Access Key : ${NC}"
 
-  # Gagal 3x
-  clear
-  echo -e "${RED}"
-  cat << "EOF"
+        IFS= read -r -s input
+        echo
+
+        input_hash=$(printf '%s' "$input" | sha256sum | awk '{print $1}')
+
+        if [ "$input_hash" = "$ACCESS_PASSWORD" ]; then
+            echo
+            ok_msg "Akses diterima. Memuat script..."
+            sleep 1
+            clear
+            unset input input_hash
+            return 0
+        else
+            attempts=$((attempts + 1))
+
+            echo
+            err_msg "Access Key salah! Percobaan: $attempts/$MAX_ATTEMPTS"
+            unset input input_hash
+            sleep 2
+        fi
+    done
+
+    clear
+
+    echo -e "${RED}"
+    cat << "EOF"
     ╔═══════════════════════════════════════════════════╗
     ║                                                   ║
     ║          ⛔  AKSES DITOLAK  ⛔                    ║
@@ -150,14 +159,15 @@ EOF
     ║                                                   ║
     ╚═══════════════════════════════════════════════════╝
 EOF
-  echo -e "${NC}"
-  echo -e ""
-  echo -e "${YELLOW}  Hubungi AstraCodeX untuk mendapatkan access key.${NC}"
-  echo -e "${YELLOW}  WhatsApp : wa.me/6287748920504${NC}"
-  echo -e "${YELLOW}  Telegram : t.me/astradigitalz${NC}"
-  echo -e ""
-  sleep 4
-  exit 1
+    echo -e "${NC}"
+    echo
+    echo -e "${YELLOW}  Hubungi AstraCodeX untuk mendapatkan access key.${NC}"
+    echo -e "${YELLOW}  WhatsApp : wa.me/6287748920504${NC}"
+    echo -e "${YELLOW}  Telegram : t.me/astradigitalz${NC}"
+    echo
+
+    sleep 4
+    exit 1
 }
 
 # ============================================================
