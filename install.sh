@@ -2,6 +2,7 @@
 # ============================================================
 #  AUTO INSTALLER PTERODACTYL - ZERODEV
 #  Credit : AstraCodeX | WhatsApp : wa.me/6287748920504
+#  Version : 3.0 (Auth Gate + Multi-User + Anti-Konflik)
 # ============================================================
 
 # ---------- WARNA ----------
@@ -12,9 +13,14 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# ---------- USER DETECTION ----------
-# Deteksi user asli (bukan root), support root@, ubuntu@, custom@
-if [ -n "$SUDO_USER" ]; then
+# ---------- AUTH CONFIG ----------
+ACCESS_PASSWORD="AstraCodeX"
+MAX_ATTEMPTS=3
+
+# ============================================================
+#  USER & SUDO DETECTION
+# ============================================================
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
   REAL_USER="$SUDO_USER"
 elif [ "$(id -u)" -eq 0 ]; then
   REAL_USER="root"
@@ -22,7 +28,6 @@ else
   REAL_USER="$USER"
 fi
 
-# Home directory dinamis
 if [ "$REAL_USER" = "root" ]; then
   USER_HOME="/root"
 else
@@ -30,18 +35,18 @@ else
   [ -z "$USER_HOME" ] && USER_HOME="/home/$REAL_USER"
 fi
 
-# ---------- GLOBAL VAR ----------
-PANEL_DIR="/var/www/pterodactyl"
-WORK_DIR="$USER_HOME/protect-tmp"
-EXISTING_LOCK="$PANEL_DIR/.protect.lock"
-
-# ---------- SUDO HELPER ----------
-# Gunakan sudo hanya jika bukan root
 if [ "$(id -u)" -eq 0 ]; then
   SUDO=""
 else
   SUDO="sudo"
 fi
+
+# ============================================================
+#  GLOBAL VAR
+# ============================================================
+PANEL_DIR="/var/www/pterodactyl"
+WORK_DIR="$USER_HOME/protect-tmp"
+EXISTING_LOCK="$PANEL_DIR/.protect.lock"
 
 # ============================================================
 #  FUNGSI BANTUAN
@@ -85,6 +90,195 @@ clear_cache() {
 }
 
 # ============================================================
+#  AUTH GATE (Middleware API Key)
+# ============================================================
+auth_gate() {
+  local attempts=0
+  local input
+
+  while [ "$attempts" -lt "$MAX_ATTEMPTS" ]; do
+    clear
+    echo -e "${CYAN}"
+    cat << "EOF"
+    ___         __             ______          __        _  __
+   /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
+  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   / 
+ / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |  
+/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|  
+EOF
+    echo -e "${NC}"
+    echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
+    echo -e "${BLUE}                  © AstraCodeX${NC}"
+    echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
+    echo -e ""
+    echo -e "${RED}              🔒 SECURITY GATE - AUTH REQUIRED 🔒${NC}"
+    echo -e ""
+    echo -e "${YELLOW}  Script ini dilindungi oleh Access Key.${NC}"
+    echo -e "${YELLOW}  Masukkan access key untuk melanjutkan.${NC}"
+    echo -e ""
+    echo -e "${CYAN}  Attempt tersisa: ${YELLOW}$((MAX_ATTEMPTS - attempts))${NC}"
+    echo -e ""
+    echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
+    echo -ne "${YELLOW}  ➜ Access Key : ${NC}"
+    read -rs input
+    echo -e ""
+
+    if [ "$input" = "$ACCESS_PASSWORD" ]; then
+      echo -e ""
+      ok_msg "Akses diterima. Memuat script..."
+      sleep 1
+      clear
+      return 0
+    else
+      attempts=$((attempts + 1))
+      echo -e ""
+      err_msg "Access Key salah! Percobaan: $attempts/$MAX_ATTEMPTS"
+      sleep 2
+    fi
+  done
+
+  # Gagal 3x
+  clear
+  echo -e "${RED}"
+  cat << "EOF"
+    ╔═══════════════════════════════════════════════════╗
+    ║                                                   ║
+    ║          ⛔  AKSES DITOLAK  ⛔                    ║
+    ║                                                   ║
+    ║     Terlalu banyak percobaan gagal.               ║
+    ║     Script akan keluar demi keamanan.             ║
+    ║                                                   ║
+    ╚═══════════════════════════════════════════════════╝
+EOF
+  echo -e "${NC}"
+  echo -e ""
+  echo -e "${YELLOW}  Hubungi AstraCodeX untuk mendapatkan access key.${NC}"
+  echo -e "${YELLOW}  WhatsApp : wa.me/6287748920504${NC}"
+  echo -e "${YELLOW}  Telegram : t.me/astradigitalz${NC}"
+  echo -e ""
+  sleep 4
+  exit 1
+}
+
+# ============================================================
+#  SUDO PRE-AUTH + KEEP ALIVE
+# ============================================================
+sudo_preauth() {
+  if [ -n "$SUDO" ]; then
+    info_msg "Script membutuhkan akses sudo."
+    echo -e "${YELLOW}    Masukkan password sudo SEKALI saja (akan di-cache).${NC}"
+    if ! sudo -v; then
+      err_msg "Gagal autentikasi sudo."
+      exit 1
+    fi
+
+    # Keep-alive background: refresh sudo timestamp tiap 60 detik
+    ( while true; do sudo -n true 2>/dev/null; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
+    SUDO_KEEPALIVE_PID=$!
+    trap 'kill $SUDO_KEEPALIVE_PID 2>/dev/null' EXIT
+
+    ok_msg "Autentikasi sudo berhasil."
+  fi
+}
+
+# ============================================================
+#  CLEANUP NODESOURCE (FIX KONFLIK Signed-By)
+# ============================================================
+cleanup_nodesource() {
+  info_msg "Membersihkan konfigurasi NodeSource lama (jika ada)..."
+
+  $SUDO rm -f /etc/apt/sources.list.d/nodesource.list
+  $SUDO rm -f /etc/apt/sources.list.d/nodesource.list.save
+  $SUDO rm -f /etc/apt/sources.list.d/nodesource.list.distUpgrade
+
+  $SUDO rm -f /etc/apt/keyrings/nodesource.gpg
+  $SUDO rm -f /etc/apt/keyrings/nodesource-repo.gpg
+  $SUDO rm -f /usr/share/keyrings/nodesource.gpg
+  $SUDO rm -f /usr/share/keyrings/nodesource-repo.gpg
+
+  local NODE_FILES
+  NODE_FILES=$($SUDO grep -rl "deb.nodesource.com" /etc/apt/ 2>/dev/null)
+  if [ -n "$NODE_FILES" ]; then
+    echo "$NODE_FILES" | while read -r f; do
+      if [ -f "$f" ]; then
+        $SUDO rm -f "$f"
+        info_msg "Dihapus: $f"
+      fi
+    done
+  fi
+
+  $SUDO rm -f /var/lib/apt/lists/lock 2>/dev/null
+  $SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null
+  $SUDO rm -f /var/lib/dpkg/lock* 2>/dev/null
+
+  ok_msg "Cleanup NodeSource selesai."
+}
+
+# ============================================================
+#  PRE-FLIGHT CHECK
+# ============================================================
+preflight_check() {
+  info_msg "Memeriksa konfigurasi apt..."
+
+  if ! $SUDO apt-get update -qq 2>/tmp/apt_err.log; then
+    warn_msg "apt update gagal! Detail:"
+    cat /tmp/apt_err.log
+    echo ""
+
+    if grep -q "Conflicting values set for option Signed-By" /tmp/apt_err.log; then
+      warn_msg "Terdeteksi konflik NodeSource. Membersihkan..."
+      cleanup_nodesource
+      $SUDO apt-get update -qq || {
+        err_msg "apt masih error. Cek manual: sudo apt update"
+        exit 1
+      }
+    else
+      err_msg "apt error yang tidak dikenali. Fix manual dulu."
+      exit 1
+    fi
+  fi
+
+  ok_msg "Konfigurasi apt OK."
+}
+
+# ============================================================
+#  INSTALL NODE.JS 22 (Idempotent)
+# ============================================================
+install_nodejs22() {
+  info_msg "Menyiapkan Node.js v22..."
+
+  if command -v node >/dev/null 2>&1; then
+    local CUR_VER
+    CUR_VER=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null)
+    if [ -n "$CUR_VER" ] && [ "$CUR_VER" -ge 22 ] 2>/dev/null; then
+      ok_msg "Node.js v$(node -v) sudah tersedia."
+      if ! command -v yarn >/dev/null 2>&1; then
+        $SUDO npm install -g yarn >/dev/null 2>&1
+      fi
+      return 0
+    fi
+  fi
+
+  cleanup_nodesource
+
+  $SUDO mkdir -p /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
+    $SUDO gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
+    $SUDO tee /etc/apt/sources.list.d/nodesource.list > /dev/null
+
+  $SUDO apt-get update -qq
+  $SUDO apt-get install -y nodejs
+
+  if ! command -v yarn >/dev/null 2>&1; then
+    $SUDO npm install -g yarn >/dev/null 2>&1
+  fi
+
+  ok_msg "Node.js $(node -v) + Yarn $(yarn -v) siap."
+}
+
+# ============================================================
 #  WELCOME
 # ============================================================
 display_welcome() {
@@ -104,6 +298,9 @@ EOF
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e ""
   echo -e "${GREEN}  ⚡ Selamat datang di Auto Installer AstraCodeX${NC}"
+  echo -e "  Script ini dibuat untuk mempermudah instalasi"
+  echo -e "  theme, panel, dan node Pterodactyl secara otomatis."
+  echo -e ""
   echo -e "  ${CYAN}User terdeteksi : ${YELLOW}${REAL_USER}@$(hostname)${NC}"
   echo -e "  ${CYAN}Home directory : ${YELLOW}${USER_HOME}${NC}"
   echo -e ""
@@ -122,6 +319,13 @@ EOF
 # ============================================================
 install_jq() {
   banner "UPDATE & INSTALL JQ                           "
+
+  if command -v jq >/dev/null 2>&1; then
+    ok_msg "JQ sudah terinstall: $(jq --version)"
+    pause_clear
+    return
+  fi
+
   $SUDO apt update && $SUDO apt install -y jq
   if [ $? -eq 0 ]; then
     ok_msg "INSTALL JQ BERHASIL"
@@ -149,6 +353,7 @@ EOF
     echo -e "${NC}"
     echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
     echo -e "${BLUE}                  © AstraCodeX | zerodev${NC}"
+    echo -e "${BLUE}              Telegram : t.me/ext4you${NC}"
     echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
     echo -e ""
     echo -e "${GREEN}  [ PILIH THEME YANG INGIN DIINSTALL ]${NC}"
@@ -185,16 +390,9 @@ EOF
   if [ "$SELECT_THEME" = "7" ]; then
     banner "INSTALL BLUEPRINT FRAMEWORK                   "
     $SUDO apt-get update
-    $SUDO apt-get install -y ca-certificates curl gnupg zip unzip git curl wget
+    $SUDO apt-get install -y ca-certificates curl gnupg zip unzip git wget
 
-    $SUDO mkdir -p /etc/apt/keyrings
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      $SUDO gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      $SUDO tee /etc/apt/sources.list.d/nodesource.list
-    $SUDO apt-get update
-    $SUDO apt-get install -y nodejs
-    $SUDO npm i -g yarn
+    install_nodejs22
 
     cd "$PANEL_DIR" || return
     $SUDO yarn
@@ -264,14 +462,7 @@ EOF
     $SUDO unzip -o /var/www/ElysiumTheme.zip -d /var/www/
     $SUDO rm -f /var/www/ElysiumTheme.zip
 
-    $SUDO mkdir -p /etc/apt/keyrings
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      $SUDO gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      $SUDO tee /etc/apt/sources.list.d/nodesource.list
-    $SUDO apt update
-    $SUDO apt install -y nodejs npm
-    $SUDO npm i -g yarn
+    install_nodejs22
 
     cd "$PANEL_DIR" || return
     $SUDO yarn
@@ -296,9 +487,7 @@ EOF
   if [ "$SELECT_THEME" = "1" ]; then
     banner "INSTALL THEME STELLAR                         "
     $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
-    $SUDO apt install -y nodejs
-    $SUDO npm i -g yarn
+    install_nodejs22
     cd "$PANEL_DIR" || return
     $SUDO yarn add react-feather
     $SUDO php artisan migrate --force
@@ -315,9 +504,7 @@ EOF
   if [ "$SELECT_THEME" = "2" ]; then
     banner "INSTALL THEME BILLING                         "
     $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
-    $SUDO apt install -y nodejs
-    $SUDO npm i -g yarn
+    install_nodejs22
     cd "$PANEL_DIR" || return
     $SUDO yarn add react-feather
     $SUDO php artisan billing:install stable
@@ -349,9 +536,7 @@ EOF
     fi
 
     $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
-    $SUDO apt install -y nodejs
-    $SUDO npm i -g yarn
+    install_nodejs22
     cd "$PANEL_DIR" || return
     $SUDO yarn add react-feather
     $SUDO php artisan migrate --force
@@ -368,73 +553,78 @@ EOF
   # ---------- NeoBrutalism ----------
   if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
-    cd /root || return
-    sudo apt install -y unzip
-    rm -rf /root/neo-tmp
-    sudo unzip -oq "/root/${THEME_NAME}.zip" -d /root/neo-tmp
-    if [ ! -f "/root/neo-tmp/pterodactyl/artisan" ] && \
-       [ ! -f "/root/neo-tmp/pterodactyl/routes/admin.php" ]; then
-      echo "[ERROR] Struktur file NeoBrutalism tidak valid."
-      rm -rf /root/neo-tmp
+    cd "$USER_HOME" || return
+    $SUDO apt install -y unzip
+    rm -rf "$USER_HOME/neo-tmp"
+    $SUDO unzip -oq "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/neo-tmp"
+
+    if [ ! -f "$USER_HOME/neo-tmp/pterodactyl/artisan" ] && \
+       [ ! -f "$USER_HOME/neo-tmp/pterodactyl/routes/admin.php" ]; then
+      err_msg "Struktur file NeoBrutalism tidak valid."
+      rm -rf "$USER_HOME/neo-tmp"
       pause_clear
-      return 1
-    fi
-    if [ ! -f "/root/neo-tmp/pterodactyl/resources/views/partials/admin/neo-style.blade.php" ]; then
-      echo "[ERROR] File neo-style.blade.php tidak ditemukan."
-      rm -rf /root/neo-tmp
-      pause_clear
-      return 1
+      return
     fi
 
-    echo "[INFO] Membuat backup Pterodactyl Panel..."
-    sudo tar -czf \
-      "/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" \
+    if [ ! -f "$USER_HOME/neo-tmp/pterodactyl/resources/views/partials/admin/neo-style.blade.php" ]; then
+      err_msg "File neo-style.blade.php tidak ditemukan."
+      rm -rf "$USER_HOME/neo-tmp"
+      pause_clear
+      return
+    fi
+
+    info_msg "Membuat backup Pterodactyl Panel..."
+    $SUDO tar -czf \
+      "$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" \
       -C /var/www pterodactyl
-    echo "[INFO] Memasang tema NeoBrutalism..."
-    sudo cp -a /root/neo-tmp/pterodactyl/. "$PANEL_DIR/"
+
+    info_msg "Memasang tema NeoBrutalism..."
+    $SUDO cp -a "$USER_HOME/neo-tmp/pterodactyl/." "$PANEL_DIR/"
+
     cd "$PANEL_DIR" || return
     ADMIN_ROUTES="$PANEL_DIR/routes/admin.php"
-    sudo sed -i "/theme-admin\.php/d" "$ADMIN_ROUTES"
+    $SUDO sed -i "/theme-admin\.php/d" "$ADMIN_ROUTES"
     echo "require base_path('routes/theme-admin.php');" \
-      | sudo tee -a "$ADMIN_ROUTES" > /dev/null
-    echo "[INFO] Memastikan Node.js v22 tersedia..."
-    if ! command -v node >/dev/null 2>&1 || \
-       [ "$(node -p 'Number(process.versions.node.split(".")[0])')" -lt 22 ]; then
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-      sudo apt install -y nodejs
-    fi
-    if ! command -v yarn >/dev/null 2>&1; then
-      sudo npm install -g yarn
-    fi
-    echo "[INFO] Menginstal dependency frontend..."
-    yarn add react-feather
-    echo "[INFO] Menjalankan migrasi database..."
-    php artisan migrate --force
-    echo "[INFO] Build frontend..."
-    yarn build:production
-    echo "[INFO] Membersihkan cache Laravel..."
-    php artisan view:clear
-    php artisan config:clear
-    php artisan route:clear
-    php artisan cache:clear
-    echo "[INFO] Mengatur permission..."
-    sudo chown -R www-data:www-data \
+      | $SUDO tee -a "$ADMIN_ROUTES" > /dev/null
+
+    install_nodejs22
+
+    info_msg "Menginstal dependency frontend..."
+    $SUDO yarn add react-feather
+
+    info_msg "Menjalankan migrasi database..."
+    $SUDO php artisan migrate --force
+
+    info_msg "Build frontend..."
+    $SUDO yarn build:production
+
+    info_msg "Membersihkan cache Laravel..."
+    $SUDO php artisan view:clear
+    $SUDO php artisan config:clear
+    $SUDO php artisan route:clear
+    $SUDO php artisan cache:clear
+
+    info_msg "Mengatur permission..."
+    $SUDO chown -R www-data:www-data \
       "$PANEL_DIR/storage" \
       "$PANEL_DIR/bootstrap/cache"
     if [ -d "$PANEL_DIR/public/uploads/theme" ]; then
-      sudo chown -R www-data:www-data \
+      $SUDO chown -R www-data:www-data \
         "$PANEL_DIR/public/uploads/theme"
     fi
-   echo "[INFO] Restart queue workers..."
-    php artisan queue:restart || true
-    echo "[INFO] Menghapus file sementara..."
-    sudo rm -f "/root/${THEME_NAME}.zip"
-    sudo rm -rf /root/neo-tmp
+
+    info_msg "Restart queue workers..."
+    $SUDO php artisan queue:restart || true
+
+    info_msg "Menghapus file sementara..."
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/neo-tmp"
+
     ok_msg "INSTALL SUCCESS"
     echo "Theme       : NeoBrutalism"
     echo "Stylesheet  : neo-style.blade.php"
     echo "Admin Theme : /admin/theme"
-    echo "Backup      : /root/panel-backup-*.tar.gz"
+    echo "Backup      : $USER_HOME/panel-backup-*.tar.gz"
     pause_clear
     return
   fi
@@ -542,7 +732,7 @@ install_protect() {
   echo -e ""
   echo -e "${GREEN}[✓] Backup disimpan: $BACKUP_FILE${NC}"
   echo -e "${GREEN}[✓] $TOTAL file proteksi terpasang.${NC}"
-  echo -e "${YELLOW}Untuk melepas proteksi: bash install.sh restore${NC}"
+  echo -e "${YELLOW}Untuk melepas proteksi: pilih menu [8] Restore Protect${NC}"
   echo -e ""
   sleep 3
   clear
@@ -773,11 +963,23 @@ ubahpw_vps() {
 }
 
 # ============================================================
+#  FIX APT MANUAL (Menu 11)
+# ============================================================
+fix_apt_menu() {
+  banner "FIX APT / NODESOURCE CONFLICT                "
+  cleanup_nodesource
+  info_msg "Menjalankan apt update..."
+  if $SUDO apt update; then
+    ok_msg "APT sudah bersih & berfungsi normal."
+  else
+    err_msg "Masih ada error. Cek output di atas."
+  fi
+  pause_clear
+}
+
+# ============================================================
 #  MAIN MENU
 # ============================================================
-display_welcome
-install_jq
-
 main_menu() {
   clear
   echo -e "${CYAN}"
@@ -791,6 +993,7 @@ EOF
   echo -e "${NC}"
   echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
   echo -e "${BLUE}                  © AstraCodeX | zerodev${NC}"
+  echo -e "${BLUE}              Telegram : t.me/ext4you${NC}"
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e "${CYAN}  User : ${YELLOW}${REAL_USER}@$(hostname)${NC}"
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
@@ -810,14 +1013,24 @@ EOF
   echo -e "  ${CYAN}[8]${NC}  Restore Protect"
   echo -e "  ${CYAN}[9]${NC}  Hack Back Panel"
   echo -e "  ${CYAN}[10]${NC} Ubah Password VPS"
+  echo -e "  ${CYAN}[11]${NC} Fix APT / NodeSource Conflict"
   echo -e ""
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e "  ${RED}[x]${NC}  Exit"
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
   echo -e ""
-  echo -ne "${YELLOW}  ➜ Pilih menu [1-10/x] : ${NC}"
+  echo -ne "${YELLOW}  ➜ Pilih menu [1-11/x] : ${NC}"
   read -r MENU_CHOICE
 }
+
+# ============================================================
+#  STARTUP SEQUENCE
+# ============================================================
+auth_gate                  # 🔐 AUTH FIRST
+display_welcome
+sudo_preauth
+preflight_check
+install_jq
 
 # ============================================================
 #  LOOP UTAMA
@@ -836,6 +1049,7 @@ while true; do
     8)  restore_protect ;;
     9)  hackback_panel ;;
     10) ubahpw_vps ;;
+    11) fix_apt_menu ;;
     x|X) echo -e "${GREEN}[✓] Terima kasih telah menggunakan AstraCodeX!${NC}"; exit 0 ;;
     *)  err_msg "Pilihan tidak valid."; sleep 1 ;;
   esac
