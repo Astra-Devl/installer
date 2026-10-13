@@ -1,37 +1,37 @@
-if (( $EUID != 0 )); then
-    echo "Silahkan masuk ke direktori root"
-    exit
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( EUID != 0 )); then
+    echo "Silahkan jalankan sebagai root (gunakan sudo)."
+    exit 1
 fi
-repairPanel(){
+
+repairPanel() {
     cd /var/www/pterodactyl
 
-    php artisan down
+    php artisan down || true
 
-    rm -r /var/www/pterodactyl/resources
+    # Hapus resource theme yang terpasang
+    rm -rf /var/www/pterodactyl/resources
+    rm -rf /var/www/pterodactyl/public/themes
+    rm -rf /var/www/pterodactyl/public/assets
 
-    curl -L https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz | tar -xzv
+    # Unduh ulang panel versi terbaru (fresh)
+    curl -fsSL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz \
+        | tar -xzv
 
     chmod -R 755 storage/* bootstrap/cache
 
     composer install --no-dev --optimize-autoloader
 
     php artisan view:clear
-
     php artisan config:clear
-
     php artisan migrate --seed --force
 
     chown -R www-data:www-data /var/www/pterodactyl/*
 
     php artisan queue:restart
-
     php artisan up
 }
-while true; do
-    read -p "apakah kamu yakin untuk mengUninstall theme ? [y/n] " yn
-    case $yn in
-        [Yy]* ) repairPanel; break;;
-        [Nn]* ) exit;;
-        * ) echo "silahkan pilih (y/yes) (n/no).";;
-    esac
-done
+
+repairPanel
