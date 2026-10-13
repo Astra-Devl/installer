@@ -368,37 +368,73 @@ EOF
   # ---------- NeoBrutalism ----------
   if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
-    cd "$USER_HOME" || return
-    $SUDO apt install -y unzip
-    rm -rf "$USER_HOME/neo-tmp"
-    $SUDO unzip -oq "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/neo-tmp"
+    cd /root || return
+    sudo apt install -y unzip
+    rm -rf /root/neo-tmp
+    sudo unzip -oq "/root/${THEME_NAME}.zip" -d /root/neo-tmp
+    if [ ! -f "/root/neo-tmp/pterodactyl/artisan" ] && \
+       [ ! -f "/root/neo-tmp/pterodactyl/routes/admin.php" ]; then
+      echo "[ERROR] Struktur file NeoBrutalism tidak valid."
+      rm -rf /root/neo-tmp
+      pause_clear
+      return 1
+    fi
+    if [ ! -f "/root/neo-tmp/pterodactyl/resources/views/partials/admin/neo-style.blade.php" ]; then
+      echo "[ERROR] File neo-style.blade.php tidak ditemukan."
+      rm -rf /root/neo-tmp
+      pause_clear
+      return 1
+    fi
 
-    $SUDO tar -czf "$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var/www pterodactyl
-
-    $SUDO cp -rfT "$USER_HOME/clay-tmp/pterodactyl" "$PANEL_DIR"
-
+    echo "[INFO] Membuat backup Pterodactyl Panel..."
+    sudo tar -czf \
+      "/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" \
+      -C /var/www pterodactyl
+    echo "[INFO] Memasang tema NeoBrutalism..."
+    sudo cp -a /root/neo-tmp/pterodactyl/. "$PANEL_DIR/"
     cd "$PANEL_DIR" || return
-    grep -q "theme-admin.php" routes/admin.php || \
-      echo "require __DIR__ . '/theme-admin.php';" | $SUDO tee -a routes/admin.php > /dev/null
-
-    curl -sL https://deb.nodesource.com/setup_22.x | $SUDO -E bash -
-    $SUDO apt install -y nodejs
-    $SUDO npm i -g yarn
-
-    $SUDO yarn add react-feather
-    $SUDO php artisan migrate --force
-    $SUDO yarn build:production
-
-    $SUDO php artisan view:clear
-    $SUDO php artisan config:clear
-    $SUDO php artisan route:clear
-    $SUDO php artisan queue:restart
-    $SUDO chown -R www-data:www-data "$PANEL_DIR"/*
-
-    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
-    $SUDO rm -rf "$USER_HOME/neo-tmp"
-
+    ADMIN_ROUTES="$PANEL_DIR/routes/admin.php"
+    sudo sed -i "/theme-admin\.php/d" "$ADMIN_ROUTES"
+    echo "require base_path('routes/theme-admin.php');" \
+      | sudo tee -a "$ADMIN_ROUTES" > /dev/null
+    echo "[INFO] Memastikan Node.js v22 tersedia..."
+    if ! command -v node >/dev/null 2>&1 || \
+       [ "$(node -p 'Number(process.versions.node.split(".")[0])')" -lt 22 ]; then
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+      sudo apt install -y nodejs
+    fi
+    if ! command -v yarn >/dev/null 2>&1; then
+      sudo npm install -g yarn
+    fi
+    echo "[INFO] Menginstal dependency frontend..."
+    yarn add react-feather
+    echo "[INFO] Menjalankan migrasi database..."
+    php artisan migrate --force
+    echo "[INFO] Build frontend..."
+    yarn build:production
+    echo "[INFO] Membersihkan cache Laravel..."
+    php artisan view:clear
+    php artisan config:clear
+    php artisan route:clear
+    php artisan cache:clear
+    echo "[INFO] Mengatur permission..."
+    sudo chown -R www-data:www-data \
+      "$PANEL_DIR/storage" \
+      "$PANEL_DIR/bootstrap/cache"
+    if [ -d "$PANEL_DIR/public/uploads/theme" ]; then
+      sudo chown -R www-data:www-data \
+        "$PANEL_DIR/public/uploads/theme"
+    fi
+   echo "[INFO] Restart queue workers..."
+    php artisan queue:restart || true
+    echo "[INFO] Menghapus file sementara..."
+    sudo rm -f "/root/${THEME_NAME}.zip"
+    sudo rm -rf /root/neo-tmp
     ok_msg "INSTALL SUCCESS"
+    echo "Theme       : NeoBrutalism"
+    echo "Stylesheet  : neo-style.blade.php"
+    echo "Admin Theme : /admin/theme"
+    echo "Backup      : /root/panel-backup-*.tar.gz"
     pause_clear
     return
   fi
