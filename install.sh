@@ -2,7 +2,7 @@
 # ============================================================
 #  AUTO INSTALLER PTERODACTYL - ZERODEV
 #  Credit : AstraCodeX | WhatsApp : wa.me/6287748920504
-#  Version : 3.1 (Fixed Bugs + Safer Permissions)
+#  Version : 3.0 (Auth Gate + Multi-User + Anti-Konflik)
 # ============================================================
 
 # ---------- WARNA ----------
@@ -46,12 +46,7 @@ fi
 # ============================================================
 PANEL_DIR="/var/www/pterodactyl"
 WORK_DIR="$USER_HOME/protect-tmp"
-# FIXED: pindahkan lock ke luar panel agar tidak tertimpa saat restore
-LOCK_DIR="$USER_HOME/.astracodex"
-EXISTING_LOCK="$LOCK_DIR/protect.lock"
-
-# FIXED: pastikan lock dir ada
-mkdir -p "$LOCK_DIR" 2>/dev/null
+EXISTING_LOCK="$PANEL_DIR/.protect.lock"
 
 # ============================================================
 #  FUNGSI BANTUAN
@@ -69,22 +64,21 @@ err_msg()  { echo -e "${RED}[x] $1${NC}"; }
 warn_msg() { echo -e "${YELLOW}[!] $1${NC}"; }
 info_msg() { echo -e "${CYAN}[i] $1${NC}"; }
 
+fail() {
+  err_msg "$1"
+  sleep 2
+  return 1
+}
+
 pause_clear() {
   sleep 2
   clear
 }
 
-# FIXED: permission lebih aman, tidak chmod 644 semua file
 fix_permission() {
   $SUDO chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null
-
-  # Direktori: 755, file: 644, kecuali storage & cache
   $SUDO find "$PANEL_DIR" -type d -exec chmod 755 {} \; 2>/dev/null
   $SUDO find "$PANEL_DIR" -type f -exec chmod 644 {} \; 2>/dev/null
-
-  # Override untuk storage & bootstrap/cache (harus writable)
-  [ -d "$PANEL_DIR/storage" ] && $SUDO chmod -R 775 "$PANEL_DIR/storage"
-  [ -d "$PANEL_DIR/bootstrap/cache" ] && $SUDO chmod -R 775 "$PANEL_DIR/bootstrap/cache"
 }
 
 clear_cache() {
@@ -107,11 +101,11 @@ auth_gate() {
 
         echo -e "${CYAN}"
         cat << "EOF"
-    ___         __             ______          __        _  __
-   /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
-  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   /
- / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |
-/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|
+    _        _             ____          _       __  __
+   / \   ___| |_ _ __ __ _ / ___|___   __| | ___  \ \/ /
+  / _ \ / __| __| '__/ _` | |   / _ \ / _` |/ _ \  \  / 
+ / ___ \\__ \ |_| | | (_| | |__| (_) | (_| |  __/  /  \ 
+/_/   \_\___/\__|_|  \__,_|\____\___/ \__,_|\___| /_/\_\
 EOF
         echo -e "${NC}"
 
@@ -179,6 +173,7 @@ sudo_preauth() {
       exit 1
     fi
 
+    # Keep-alive background: refresh sudo timestamp tiap 60 detik
     ( while true; do sudo -n true 2>/dev/null; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
     SUDO_KEEPALIVE_PID=$!
     trap 'kill $SUDO_KEEPALIVE_PID 2>/dev/null' EXIT
@@ -188,7 +183,7 @@ sudo_preauth() {
 }
 
 # ============================================================
-#  CLEANUP NODESOURCE
+#  CLEANUP NODESOURCE (FIX KONFLIK Signed-By)
 # ============================================================
 cleanup_nodesource() {
   info_msg "Membersihkan konfigurasi NodeSource lama (jika ada)..."
@@ -202,12 +197,14 @@ cleanup_nodesource() {
   $SUDO rm -f /usr/share/keyrings/nodesource.gpg
   $SUDO rm -f /usr/share/keyrings/nodesource-repo.gpg
 
-  # FIXED: pakai find untuk hapus file yang mengandung deb.nodesource.com
   local NODE_FILES
-  NODE_FILES=$($SUDO find /etc/apt -type f -exec grep -l "deb.nodesource.com" {} \; 2>/dev/null)
+  NODE_FILES=$($SUDO grep -rl "deb.nodesource.com" /etc/apt/ 2>/dev/null)
   if [ -n "$NODE_FILES" ]; then
     echo "$NODE_FILES" | while read -r f; do
-      [ -f "$f" ] && $SUDO rm -f "$f" && info_msg "Dihapus: $f"
+      if [ -f "$f" ]; then
+        $SUDO rm -f "$f"
+        info_msg "Dihapus: $f"
+      fi
     done
   fi
 
@@ -251,12 +248,11 @@ preflight_check() {
 install_nodejs22() {
   info_msg "Menyiapkan Node.js v22..."
 
-  # FIXED: gunakan cara yang lebih reliable untuk cek versi Node
   if command -v node >/dev/null 2>&1; then
     local CUR_VER
-    CUR_VER=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+    CUR_VER=$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null)
     if [ -n "$CUR_VER" ] && [ "$CUR_VER" -ge 22 ] 2>/dev/null; then
-      ok_msg "Node.js $(node -v) sudah tersedia."
+      ok_msg "Node.js v$(node -v) sudah tersedia."
       if ! command -v yarn >/dev/null 2>&1; then
         $SUDO npm install -g yarn >/dev/null 2>&1
       fi
@@ -290,11 +286,11 @@ display_welcome() {
   clear
   echo -e "${CYAN}"
   cat << "EOF"
-    ___         __             ______          __        _  __
-   /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
-  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   / 
- / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |  
-/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|  
+    _        _             ____          _       __  __
+   / \   ___| |_ _ __ __ _ / ___|___   __| | ___  \ \/ /
+  / _ \ / __| __| '__/ _` | |   / _ \ / _` |/ _ \  \  / 
+ / ___ \\__ \ |_| | | (_| | |__| (_) | (_| |  __/  /  \ 
+/_/   \_\___/\__|_|  \__,_|\____\___/ \__,_|\___| /_/\_\
 EOF
   echo -e "${NC}"
   echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
@@ -349,11 +345,11 @@ install_theme() {
     clear
     echo -e "${CYAN}"
     cat << "EOF"
-    ___         __             ______          __        _  __
-   /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
-  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   / 
- / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |  
-/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|  
+    _        _             ____          _       __  __
+   / \   ___| |_ _ __ __ _ / ___|___   __| | ___  \ \/ /
+  / _ \ / __| __| '__/ _` | |   / _ \ / _` |/ _ \  \  / 
+ / ___ \\__ \ |_| | | (_| | |__| (_) | (_| |  __/  /  \ 
+/_/   \_\___/\__|_|  \__,_|\____\___/ \__,_|\___| /_/\_\
 EOF
     echo -e "${NC}"
     echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
@@ -403,22 +399,13 @@ EOF
     $SUDO yarn
     $SUDO yarn add cross-env
 
-    # FIXED: ambil URL release dengan lebih aman
-    local RELEASE_URL
-    RELEASE_URL=$(curl -s https://api.github.com/repos/BlueprintFramework/framework/releases/latest | grep 'browser_download_url' | cut -d '"' -f 4 | head -n1)
-    if [ -z "$RELEASE_URL" ]; then
-      err_msg "Gagal mengambil URL Blueprint release."
-      pause_clear
-      return
-    fi
-    wget "$RELEASE_URL" -O release.zip
-
+    wget "$(curl -s https://api.github.com/repos/BlueprintFramework/framework/releases/latest | grep 'browser_download_url' | cut -d '"' -f 4)" -O release.zip
     $SUDO mv release.zip "$PANEL_DIR/release.zip"
     cd "$PANEL_DIR" || return
     $SUDO unzip -o release.zip
 
-    local FOLDER="$PANEL_DIR"
-    local WEBUSER="www-data"; local USERSHELL="/bin/bash"; local PERMISSIONS="www-data:www-data"
+    FOLDER="$PANEL_DIR"
+    WEBUSER="www-data"; USERSHELL="/bin/bash"; PERMISSIONS="www-data:www-data"
 
     $SUDO sed -i -E \
       -e "s|WEBUSER=\"www-data\" #;|WEBUSER=\"$WEBUSER\" #;|g" \
@@ -448,7 +435,6 @@ EOF
     rm -rf "$USER_HOME/nebula-tmp"
     unzip -o "$USER_HOME/nebulaptero.zip" -d "$USER_HOME/nebula-tmp"
 
-    local BLUEPRINT_ARC
     BLUEPRINT_ARC=$(find "$USER_HOME/nebula-tmp" -name "*.blueprint" | head -n1)
     if [ -z "$BLUEPRINT_ARC" ]; then
       err_msg "File .blueprint tidak ditemukan di dalam zip Nebula."
@@ -491,15 +477,12 @@ EOF
   fi
 
   # ===================== THEME LAMA (1-4) =====================
-  # FIXED: hapus juga folder pterodactyl lama sebelum unzip
   if [ -e "$USER_HOME/pterodactyl" ]; then
     $SUDO rm -rf "$USER_HOME/pterodactyl"
   fi
   cd "$USER_HOME" || return
   wget -q "$THEME_URL" -O "$USER_HOME/${THEME_NAME}.zip"
-
-  # FIXED: unzip sebagai user (bukan sudo) agar permission file benar
-  unzip -o "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/"
+  $SUDO unzip -o "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/"
 
   # ---------- STELLAR ----------
   if [ "$SELECT_THEME" = "1" ]; then
@@ -511,8 +494,8 @@ EOF
     $SUDO php artisan migrate --force
     $SUDO yarn build:production
     $SUDO php artisan view:clear
-    rm -f "$USER_HOME/${THEME_NAME}.zip"
-    rm -rf "$USER_HOME/pterodactyl"
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -529,8 +512,8 @@ EOF
     $SUDO php artisan migrate --force
     $SUDO yarn build:production
     $SUDO php artisan view:clear
-    rm -f "$USER_HOME/${THEME_NAME}.zip"
-    rm -rf "$USER_HOME/pterodactyl"
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -546,9 +529,8 @@ EOF
     echo -e "${YELLOW}Masukkan link channel (https://...) : ${NC}"
     read -r LINK_CHNL
 
-    local DASH_FILE="$USER_HOME/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
+    DASH_FILE="$USER_HOME/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
     if [ -f "$DASH_FILE" ]; then
-      # FIXED: escape delimiter | pada input user (URL bisa berisi |)
       $SUDO sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
       $SUDO sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
       $SUDO sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
@@ -561,8 +543,8 @@ EOF
     $SUDO php artisan migrate --force
     $SUDO yarn build:production
     $SUDO php artisan view:clear
-    rm -f "$USER_HOME/${THEME_NAME}.zip"
-    rm -rf "$USER_HOME/pterodactyl"
+    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
+    $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     sleep 3
     clear
@@ -570,7 +552,7 @@ EOF
   fi
 
   # ---------- NeoBrutalism ----------
-      if [ "$SELECT_THEME" = "4" ]; then
+  if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
 
     NEO_TMP="$USER_HOME/neo-tmp"
@@ -655,15 +637,6 @@ EOF
     $SUDO yarn install --frozen-lockfile || $SUDO yarn install \
       || { neo_fail "yarn install gagal. Backup: $BACKUP_FILE"; return; }
 
-    # Webpack 5 tidak lagi menyediakan modul node "path" (dipakai file manager bawaan panel).
-    if grep -q '"webpack": *"[\^~]*5' package.json || [ -d node_modules/webpack ] && \
-       grep -q '"version": "5' node_modules/webpack/package.json 2>/dev/null; then
-      grep -q '"path-browserify"' package.json || $SUDO yarn add path-browserify
-      if ! grep -q "path-browserify" webpack.config.js; then
-        $SUDO sed -i "0,/resolve: {/s//resolve: {\n        fallback: { path: require.resolve('path-browserify') },/" webpack.config.js
-      fi
-    fi
-
     # ---------- Database ----------
     info_msg "Menjalankan migrasi database..."
     if ! $SUDO php artisan migrate --force; then
@@ -672,11 +645,8 @@ EOF
     fi
 
     # ---------- Build ----------
-    info_msg "Memperbarui data browserslist (hanya menghilangkan peringatan)..."
-    $SUDO env npm_config_yes=true npx update-browserslist-db@latest >/dev/null 2>&1 || true
-
     info_msg "Build frontend (beberapa menit)..."
-    if ! $SUDO env NODE_OPTIONS=--openssl-legacy-provider BROWSERSLIST_IGNORE_OLD_DATA=true yarn build:production; then
+    if ! $SUDO env NODE_OPTIONS=--openssl-legacy-provider yarn build:production; then
       neo_fail "Build frontend gagal. Backup: $BACKUP_FILE"
       return
     fi
@@ -717,9 +687,19 @@ EOF
 # ============================================================
 uninstall_theme() {
   banner "DELETE THEME                                 "
-  $SUDO bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/refs/heads/main/repair.sh)
-  ok_msg "DELETE THEME SUKSES"
-  pause_clear
+
+  read -rp "Apakah kamu yakin ingin menguninstall theme? [y/N] " confirm </dev/tty
+  case "$confirm" in
+    [Yy]* )
+      $SUDO bash <(curl -fsSL https://raw.githubusercontent.com/Astra-Devl/installer/refs/heads/main/repair.sh) </dev/tty
+      ok_msg "DELETE THEME SUKSES"
+      pause_clear
+      ;;
+    * )
+      warn_msg "Dibatalkan."
+      pause_clear
+      ;;
+  esac
 }
 
 # ============================================================
@@ -766,14 +746,12 @@ install_protect() {
   fi
 
   info_msg "Membuat backup panel..."
-  local BACKUP_FILE="$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+  BACKUP_FILE="$USER_HOME/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
   $SUDO tar -czf "$BACKUP_FILE" -C /var/www pterodactyl || { err_msg "Gagal membuat backup."; return; }
 
-  # FIXED: simpan filelist di luar WORK_DIR agar bisa dibaca setelah WORK_DIR dihapus
-  local FILE_LIST="$LOCK_DIR/filelist.txt"
+  FILE_LIST="$WORK_DIR/filelist.txt"
   ( cd "$WORK_DIR/pterodactyl" && find . -type f ) > "$FILE_LIST"
 
-  # FIXED: simpan lock di LOCK_DIR (bukan di dalam panel)
   echo "$BACKUP_FILE" | $SUDO tee "$EXISTING_LOCK" > /dev/null
 
   info_msg "Menyalin file proteksi ke panel..."
@@ -785,7 +763,7 @@ install_protect() {
   }
 
   info_msg "Memeriksa syntax PHP..."
-  local SYNTAX_OK=1
+  SYNTAX_OK=1
   while read -r f; do
     case "$f" in
       *.php)
@@ -808,13 +786,9 @@ install_protect() {
 
   fix_permission
   clear_cache
-
-  # FIXED: hitung total SEBELUM WORK_DIR dihapus
-  local TOTAL
-  TOTAL=$(wc -l < "$FILE_LIST")
-
   rm -rf "$WORK_DIR"
 
+  TOTAL=$(wc -l < "$FILE_LIST")
   echo -e ""
   echo -e "${GREEN}[✓] Backup disimpan: $BACKUP_FILE${NC}"
   echo -e "${GREEN}[✓] $TOTAL file proteksi terpasang.${NC}"
@@ -836,7 +810,6 @@ restore_protect() {
     return
   fi
 
-  local BACKUP_FILE
   BACKUP_FILE=$($SUDO cat "$EXISTING_LOCK")
   if [ ! -f "$BACKUP_FILE" ]; then
     err_msg "Backup file tidak ditemukan: $BACKUP_FILE"
@@ -918,14 +891,7 @@ install_panel() {
 
   info_msg "Memproses Instalasi Panel..."
 
-  # FIXED: download installer ke file temp dulu (lebih reliable dari process substitution di sudo)
-  local INSTALLER_SH="/tmp/ptero-installer.sh"
-  curl -fsSL https://pterodactyl-installer.se -o "$INSTALLER_SH" || {
-    err_msg "Gagal mengunduh installer pterodactyl."
-    return
-  }
-
-  $SUDO bash "$INSTALLER_SH" <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 0
 y
 y
@@ -946,8 +912,7 @@ EOF
 
   info_msg "Panel selesai. Memproses Wings..."
 
-  curl -fsSL https://pterodactyl-installer.se -o "$INSTALLER_SH"
-  $SUDO bash "$INSTALLER_SH" <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 1
 y
 ${domainpanel}
@@ -959,9 +924,7 @@ y
 EOF
 
   info_msg "Membuat Node Otomatis di Panel..."
-  local CREATENODE_SH="/tmp/createnode.sh"
-  curl -fsSL https://raw.githubusercontent.com/Astra-Devl/installer/main/createnode.sh -o "$CREATENODE_SH"
-  $SUDO bash "$CREATENODE_SH" <<EOF
+  $SUDO bash <(curl -s https://raw.githubusercontent.com/Astra-Devl/installer/main/createnode.sh) <<EOF
 Singapore
 Node By AstraCodeX
 ${domainnode}
@@ -970,8 +933,6 @@ ${ramserver}
 ${ramserver}
 1
 EOF
-
-  rm -f "$INSTALLER_SH" "$CREATENODE_SH"
 
   echo -e ""
   ok_msg "INSTALL PANEL & WINGS SUKSES"
@@ -991,18 +952,12 @@ EOF
 # ============================================================
 uninstall_panel() {
   banner "UNINSTALL PANEL                              "
-  local INSTALLER_SH="/tmp/ptero-installer.sh"
-  curl -fsSL https://pterodactyl-installer.se -o "$INSTALLER_SH" || {
-    err_msg "Gagal mengunduh installer."
-    return
-  }
-  $SUDO bash "$INSTALLER_SH" <<EOF
+  $SUDO bash <(curl -s https://pterodactyl-installer.se) <<EOF
 y
 y
 y
 y
 EOF
-  rm -f "$INSTALLER_SH"
   ok_msg "UNINSTALL PANEL SUKSES"
   pause_clear
 }
@@ -1031,9 +986,7 @@ configure_wings() {
 hackback_panel() {
   banner "HACK BACK PANEL                              "
   read -p "Masukkan Username Panel: " user
-  # FIXED: password tidak ditampilkan
-  read -r -s -p "Password login: " psswdhb
-  echo
+  read -p "Password login: " psswdhb
 
   cd "$PANEL_DIR" || { err_msg "Direktori tidak ditemukan"; return; }
 
@@ -1055,10 +1008,8 @@ EOF
 # ============================================================
 ubahpw_vps() {
   banner "UBAH PASSWORD VPS                            "
-  read -r -s -p "Masukkan Pw Baru: " pw
-  echo
-  read -r -s -p "Masukkan Ulang Pw Baru: " pw2
-  echo
+  read -p "Masukkan Pw Baru: " pw
+  read -p "Masukkan Ulang Pw Baru: " pw2
 
   if [ "$pw" != "$pw2" ]; then
     err_msg "Password tidak sama!"
@@ -1093,11 +1044,11 @@ main_menu() {
   clear
   echo -e "${CYAN}"
   cat << "EOF"
-    ___         __             ______          __        _  __
-   /   |  _____/ /_____ ______ / ____/___  ____/ /__     | |/ /
-  / /| | / ___/ __/ __ `/ ___// /   / __ \/ __  / _ \    |   / 
- / ___ |(__  ) /_/ /_/ / /   / /___/ /_/ / /_/ /  __/   /   |  
-/_/  |_/____/\__/\__,_/_/    \____/\____/\__,_/\___/   /_/|_|  
+    _        _             ____          _       __  __
+   / \   ___| |_ _ __ __ _ / ___|___   __| | ___  \ \/ /
+  / _ \ / __| __| '__/ _` | |   / _ \ / _` |/ _ \  \  / 
+ / ___ \\__ \ |_| | | (_| | |__| (_) | (_| |  __/  /  \ 
+/_/   \_\___/\__|_|  \__,_|\____\___/ \__,_|\___| /_/\_\
 EOF
   echo -e "${NC}"
   echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
