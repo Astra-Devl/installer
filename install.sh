@@ -12,59 +12,6 @@ YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# ============================================================
-#  FIX: PASTIKAN SCRIPT JALAN SEBAGAI ROOT
-#  (menyelesaikan error "Permission denied" & prompt sudo berulang)
-# ============================================================
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${YELLOW}[!] Script ini perlu akses root. Menjalankan ulang dengan sudo...${NC}"
-
-  # Jika dijalankan lewat "bash <(curl ...)" atau "curl ... | bash",
-  # $0 bukan file fisik (mis. /dev/fd/63) sehingga tidak bisa dibuka lagi
-  # oleh proses sudo yang baru. Solusinya: salin isi script ke file
-  # sementara di /tmp dulu, baru dijalankan ulang dengan sudo dari sana.
-  TMP_SCRIPT=$(mktemp /tmp/astra-installer.XXXXXX.sh)
-
-  if ! cat "$0" > "$TMP_SCRIPT" 2>/dev/null || [ ! -s "$TMP_SCRIPT" ]; then
-    cat /dev/stdin > "$TMP_SCRIPT" 2>/dev/null
-  fi
-
-  if [ ! -s "$TMP_SCRIPT" ]; then
-    echo -e "${RED}[x] Gagal menyiapkan ulang script untuk dijalankan sebagai root.${NC}"
-    echo -e "${YELLOW}    Coba jalankan dengan cara berikut sebagai gantinya:${NC}"
-    echo -e "    curl -s https://raw.githubusercontent.com/Astra-Devl/installer/main/install.sh -o install.sh && sudo bash install.sh"
-    rm -f "$TMP_SCRIPT"
-    exit 1
-  fi
-
-  chmod +x "$TMP_SCRIPT"
-  exec sudo bash "$TMP_SCRIPT" "$@"
-fi
-
-# ============================================================
-#  FIX: NAIKKAN LIMIT INOTIFY & OPEN FILES
-#  (menyelesaikan error "Failed to allocate directory watch: Too many open files")
-# ============================================================
-fix_inotify_limits() {
-  CURRENT_WATCHES=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
-  CURRENT_INSTANCES=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
-
-  if [ "$CURRENT_WATCHES" -lt 524288 ] 2>/dev/null; then
-    grep -q "fs.inotify.max_user_watches" /etc/sysctl.conf 2>/dev/null \
-      && sed -i 's/^fs.inotify.max_user_watches=.*/fs.inotify.max_user_watches=524288/' /etc/sysctl.conf \
-      || echo "fs.inotify.max_user_watches=524288" >> /etc/sysctl.conf
-  fi
-
-  if [ "$CURRENT_INSTANCES" -lt 512 ] 2>/dev/null; then
-    grep -q "fs.inotify.max_user_instances" /etc/sysctl.conf 2>/dev/null \
-      && sed -i 's/^fs.inotify.max_user_instances=.*/fs.inotify.max_user_instances=512/' /etc/sysctl.conf \
-      || echo "fs.inotify.max_user_instances=512" >> /etc/sysctl.conf
-  fi
-
-  sysctl -p >/dev/null 2>&1
-  ulimit -n 65536 2>/dev/null
-}
-
 # ---------- GLOBAL VAR ----------
 PANEL_DIR="/var/www/pterodactyl"
 WORK_DIR="/root/protect-tmp"
@@ -160,7 +107,7 @@ EOF
 # ============================================================
 install_jq() {
   banner "UPDATE & INSTALL JQ                           "
-  apt update && apt install -y jq
+  sudo apt update && sudo apt install -y jq
   if [ $? -eq 0 ]; then
     ok_msg "INSTALL JQ BERHASIL"
   else
@@ -223,17 +170,17 @@ EOF
   # ===================== BLUEPRINT =====================
   if [ "$SELECT_THEME" = "7" ]; then
     banner "INSTALL BLUEPRINT FRAMEWORK                   "
-    apt-get update
-    apt-get install -y ca-certificates curl gnupg zip unzip git curl wget
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg zip unzip git curl wget
 
-    mkdir -p /etc/apt/keyrings
+    sudo mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+      sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      tee /etc/apt/sources.list.d/nodesource.list
-    apt-get update
-    apt-get install -y nodejs
-    npm i -g yarn
+      sudo tee /etc/apt/sources.list.d/nodesource.list
+    sudo apt-get update
+    sudo apt-get install -y nodejs
+    sudo npm i -g yarn
 
     cd "$PANEL_DIR" || return
     yarn
@@ -283,10 +230,10 @@ EOF
     fi
 
     cd "$PANEL_DIR" || return
-    cp "$BLUEPRINT_ARC" "$PANEL_DIR/nebula.blueprint"
+    sudo cp "$BLUEPRINT_ARC" "$PANEL_DIR/nebula.blueprint"
     blueprint -install nebula
 
-    cd "$PANEL_DIR" && rm -f nebula.blueprint
+    cd "$PANEL_DIR" && sudo rm -f nebula.blueprint
     rm -rf /root/nebula-tmp /root/nebulaptero.zip
 
     ok_msg "Nebula Theme berhasil diinstall."
@@ -299,19 +246,19 @@ EOF
     banner "INSTALL ELYSIUM THEME                         "
     cd /root || return
     wget -q "$THEME_URL" -O /root/ElysiumTheme.zip
-    mv /root/ElysiumTheme.zip /var/www/
+    sudo mv /root/ElysiumTheme.zip /var/www/
     unzip -o /var/www/ElysiumTheme.zip -d /var/www/
     rm -f /var/www/ElysiumTheme.zip
 
     # Node.js 22 (URL sudah diperbaiki)
-    mkdir -p /etc/apt/keyrings
+    sudo mkdir -p /etc/apt/keyrings
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | \
-      gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+      sudo gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | \
-      tee /etc/apt/sources.list.d/nodesource.list
-    apt update
-    apt install -y nodejs npm
-    npm i -g yarn
+      sudo tee /etc/apt/sources.list.d/nodesource.list
+    sudo apt update
+    sudo apt install -y nodejs npm
+    sudo npm i -g yarn
 
     cd "$PANEL_DIR" || return
     yarn
@@ -326,26 +273,26 @@ EOF
 
   # ===================== THEME LAMA (1-4) =====================
   if [ -e /root/pterodactyl ]; then
-    rm -rf /root/pterodactyl
+    sudo rm -rf /root/pterodactyl
   fi
   cd /root || return
   wget -q "$THEME_URL" -O "/root/${THEME_NAME}.zip"
-  unzip -o "/root/${THEME_NAME}.zip" -d /root/
+  sudo unzip -o "/root/${THEME_NAME}.zip" -d /root/
 
   # ---------- STELLAR ----------
   if [ "$SELECT_THEME" = "1" ]; then
     banner "INSTALL THEME STELLAR                         "
-    cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | bash -
-    apt install -y nodejs
-    npm i -g yarn
+    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    sudo npm i -g yarn
     cd "$PANEL_DIR" || return
     yarn add react-feather
     php artisan migrate --force
     yarn build:production
     php artisan view:clear
-    rm -f "/root/${THEME_NAME}.zip"
-    rm -rf /root/pterodactyl
+    sudo rm -f "/root/${THEME_NAME}.zip"
+    sudo rm -rf /root/pterodactyl
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -354,18 +301,18 @@ EOF
   # ---------- BILLING ----------
   if [ "$SELECT_THEME" = "2" ]; then
     banner "INSTALL THEME BILLING                         "
-    cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | bash -
-    apt install -y nodejs
-    npm i -g yarn
+    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    sudo npm i -g yarn
     cd "$PANEL_DIR" || return
     yarn add react-feather
     php artisan billing:install stable
     php artisan migrate --force
     yarn build:production
     php artisan view:clear
-    rm -f "/root/${THEME_NAME}.zip"
-    rm -rf /root/pterodactyl
+    sudo rm -f "/root/${THEME_NAME}.zip"
+    sudo rm -rf /root/pterodactyl
     ok_msg "INSTALL SUCCESS"
     pause_clear
     return
@@ -383,47 +330,47 @@ EOF
 
     DASH_FILE="/root/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
     if [ -f "$DASH_FILE" ]; then
-      sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
-      sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
-      sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
+      sudo sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
+      sudo sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
+      sudo sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
     fi
 
-    cp -rfT /root/pterodactyl "$PANEL_DIR"
-    curl -sL https://deb.nodesource.com/setup_22.x | bash -
-    apt install -y nodejs
-    npm i -g yarn
+    sudo cp -rfT /root/pterodactyl "$PANEL_DIR"
+    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    sudo npm i -g yarn
     cd "$PANEL_DIR" || return
     yarn add react-feather
     php artisan migrate --force
     yarn build:production
     php artisan view:clear
-    rm -f "/root/${THEME_NAME}.zip"
-    rm -rf /root/pterodactyl
+    sudo rm -f "/root/${THEME_NAME}.zip"
+    sudo rm -rf /root/pterodactyl
     ok_msg "INSTALL SUCCESS"
     sleep 3
     clear
     return
   fi
 
-  # ---------- CLAYMORPHISM ----------
+  # ---------- NeoBrutalism ----------
   if [ "$SELECT_THEME" = "4" ]; then
-    banner "INSTALL THEME CLAYMORPHISM                    "
+    banner "INSTALL THEME NEOBRUTALISM"
     cd /root || return
-    apt install -y unzip
-    rm -rf /root/clay-tmp
-    unzip -oq "/root/${THEME_NAME}.zip" -d /root/clay-tmp
+    sudo apt install -y unzip
+    rm -rf /root/neo-tmp
+    sudo unzip -oq "/root/${THEME_NAME}.zip" -d /root/neo-tmp
 
-    tar -czf "/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var/www pterodactyl
+    sudo tar -czf "/root/panel-backup-$(date +%Y%m%d-%H%M%S).tar.gz" -C /var/www pterodactyl
 
-    cp -rfT /root/clay-tmp/pterodactyl "$PANEL_DIR"
+    sudo cp -rfT /root/clay-tmp/pterodactyl "$PANEL_DIR"
 
     cd "$PANEL_DIR" || return
     grep -q "theme-admin.php" routes/admin.php || \
-      echo "require __DIR__ . '/theme-admin.php';" | tee -a routes/admin.php > /dev/null
+      echo "require __DIR__ . '/theme-admin.php';" | sudo tee -a routes/admin.php > /dev/null
 
-    curl -sL https://deb.nodesource.com/setup_22.x | bash -
-    apt install -y nodejs
-    npm i -g yarn
+    curl -sL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt install -y nodejs
+    sudo npm i -g yarn
 
     yarn add react-feather
     php artisan migrate --force
@@ -433,10 +380,10 @@ EOF
     php artisan config:clear
     php artisan route:clear
     php artisan queue:restart
-    chown -R www-data:www-data "$PANEL_DIR"/*
+    sudo chown -R www-data:www-data "$PANEL_DIR"/*
 
-    rm -f "/root/${THEME_NAME}.zip"
-    rm -rf /root/clay-tmp
+    sudo rm -f "/root/${THEME_NAME}.zip"
+    sudo rm -rf /root/neo-tmp
 
     ok_msg "INSTALL SUCCESS"
     pause_clear
@@ -733,17 +680,16 @@ configure_wings() {
     warn_msg "Token tidak valid, coba jalankan manual."
   fi
 
-  systemctl start wings
+  sudo systemctl start wings
   ok_msg "CONFIGURE WINGS SUKSES"
   pause_clear
 }
 
 # ============================================================
-#  RECOVERY ADMIN (buat akun admin baru untuk recovery akses panel sendiri
-#  jika lupa password akun utama)
+#  HACK BACK PANEL
 # ============================================================
-recovery_admin() {
-  banner "RECOVERY ADMIN PANEL                         "
+hackback_panel() {
+  banner "HACK BACK PANEL                              "
   read -p "Masukkan Username Panel: " user
   read -p "Password login: " psswdhb
 
@@ -776,7 +722,7 @@ ubahpw_vps() {
     return
   fi
 
-  echo "root:$pw" | chpasswd
+  echo "root:$pw" | sudo chpasswd
   ok_msg "GANTI PW VPS SUKSES"
   sleep 2
 }
@@ -785,7 +731,6 @@ ubahpw_vps() {
 #  MAIN MENU
 # ============================================================
 display_welcome
-fix_inotify_limits
 install_jq
 
 # ============================================================
@@ -820,7 +765,7 @@ EOF
   echo -e "${GREEN}  [ SECURITY & UTILITY ]${NC}"
   echo -e "  ${CYAN}[7]${NC}  Install Protect"
   echo -e "  ${CYAN}[8]${NC}  Restore Protect"
-  echo -e "  ${CYAN}[9]${NC}  Recovery Admin Panel"
+  echo -e "  ${CYAN}[9]${NC}  Hack Back Panel"
   echo -e "  ${CYAN}[10]${NC} Ubah Password VPS"
   echo -e ""
   echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
@@ -846,7 +791,7 @@ while true; do
     6)  create_node ;;
     7)  install_protect ;;
     8)  restore_protect ;;
-    9)  recovery_admin ;;
+    9)  hackback_panel ;;
     10) ubahpw_vps ;;
     x|X) echo -e "${GREEN}[✓] Terima kasih telah menggunakan AstraCodeX!${NC}"; exit 0 ;;
     *)  err_msg "Pilihan tidak valid."; sleep 1 ;;
