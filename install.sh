@@ -14,7 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ---------- AUTH CONFIG ----------
-ACCESS_PASSWORD="AstraCodeX"
+ACCESS_PASSWORD="94c82da2c8f1406ea966a92f887e5827d5aba8f4332e3dee580e54a422163062"
 MAX_ATTEMPTS=3
 
 # ============================================================
