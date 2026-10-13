@@ -14,7 +14,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ---------- AUTH CONFIG ----------
-ACCESS_PASSWORD="QXN0cmFDb2RlWA=="
+ACCESS_PASSWORD="AstraCodeX"
 MAX_ATTEMPTS=3
 
 # ============================================================
@@ -95,9 +95,6 @@ clear_cache() {
 auth_gate() {
     local attempts=0
     local input
-    local decoded_password
-
-    decoded_password=$(printf '%s' "$ACCESS_PASSWORD" | base64 -d)
 
     while [ "$attempts" -lt "$MAX_ATTEMPTS" ]; do
         clear
@@ -112,41 +109,60 @@ auth_gate() {
 EOF
         echo -e "${NC}"
 
-        echo -e "${YELLOW}       ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
-        echo -e "${BLUE}                 © AstraCodeX${NC}"
-        echo -e "${RED}          SECURITY GATE - AUTH REQUIRED${NC}"
+        echo -e "${YELLOW}              ═══ AUTO INSTALLER PTERODACTYL ═══${NC}"
+        echo -e "${BLUE}                  © AstraCodeX${NC}"
+        echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
         echo
-        echo -e "${YELLOW}  Attempt tersisa: $((MAX_ATTEMPTS - attempts))${NC}"
+        echo -e "${RED}              🔒 SECURITY GATE - AUTH REQUIRED 🔒${NC}"
         echo
+        echo -e "${YELLOW}  Script ini dilindungi oleh Access Key.${NC}"
+        echo -e "${YELLOW}  Masukkan access key untuk melanjutkan.${NC}"
+        echo
+        echo -e "${CYAN}  Attempt tersisa: ${YELLOW}$((MAX_ATTEMPTS - attempts))${NC}"
+        echo
+        echo -e "${BLUE}─────────────────────────────────────────────────────${NC}"
         echo -ne "${YELLOW}  ➜ Access Key : ${NC}"
 
         IFS= read -r -s input
         echo
 
-        if [ "$input" = "$decoded_password" ]; then
-            unset input decoded_password
+        if [ "$input" = "$ACCESS_PASSWORD" ]; then
+            echo
             ok_msg "Akses diterima. Memuat script..."
             sleep 1
             clear
+
+            unset input
             return 0
+        else
+            attempts=$((attempts + 1))
+
+            echo
+            err_msg "Access Key salah! Percobaan: $attempts/$MAX_ATTEMPTS"
+            unset input
+            sleep 2
         fi
-
-        attempts=$((attempts + 1))
-
-        unset input
-
-        err_msg "Access Key salah! Percobaan: $attempts/$MAX_ATTEMPTS"
-        sleep 2
     done
 
-    unset decoded_password
-
     clear
-    err_msg "Akses ditolak. Terlalu banyak percobaan gagal."
 
-    echo -e "${YELLOW}Hubungi AstraCodeX untuk mendapatkan access key.${NC}"
-    echo -e "${YELLOW}WhatsApp : wa.me/6287748920504${NC}"
-    echo -e "${YELLOW}Telegram : t.me/astradigitalz${NC}"
+    echo -e "${RED}"
+    cat << "EOF"
+    ╔═══════════════════════════════════════════════════╗
+    ║                                                   ║
+    ║          ⛔  AKSES DITOLAK  ⛔                    ║
+    ║                                                   ║
+    ║     Terlalu banyak percobaan gagal.               ║
+    ║     Script akan keluar demi keamanan.             ║
+    ║                                                   ║
+    ╚═══════════════════════════════════════════════════╝
+EOF
+    echo -e "${NC}"
+    echo
+    echo -e "${YELLOW}  Hubungi AstraCodeX untuk mendapatkan access key.${NC}"
+    echo -e "${YELLOW}  WhatsApp : wa.me/6287748920504${NC}"
+    echo -e "${YELLOW}  Telegram : t.me/astradigitalz${NC}"
+    echo
 
     sleep 4
     exit 1
