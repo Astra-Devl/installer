@@ -570,7 +570,7 @@ EOF
   fi
 
   # ---------- NeoBrutalism ----------
-    if [ "$SELECT_THEME" = "4" ]; then
+      if [ "$SELECT_THEME" = "4" ]; then
     banner "INSTALL THEME NEOBRUTALISM"
 
     NEO_TMP="$USER_HOME/neo-tmp"
@@ -655,6 +655,15 @@ EOF
     $SUDO yarn install --frozen-lockfile || $SUDO yarn install \
       || { neo_fail "yarn install gagal. Backup: $BACKUP_FILE"; return; }
 
+    # Webpack 5 tidak lagi menyediakan modul node "path" (dipakai file manager bawaan panel).
+    if grep -q '"webpack": *"[\^~]*5' package.json || [ -d node_modules/webpack ] && \
+       grep -q '"version": "5' node_modules/webpack/package.json 2>/dev/null; then
+      grep -q '"path-browserify"' package.json || $SUDO yarn add path-browserify
+      if ! grep -q "path-browserify" webpack.config.js; then
+        $SUDO sed -i "0,/resolve: {/s//resolve: {\n        fallback: { path: require.resolve('path-browserify') },/" webpack.config.js
+      fi
+    fi
+
     # ---------- Database ----------
     info_msg "Menjalankan migrasi database..."
     if ! $SUDO php artisan migrate --force; then
@@ -663,8 +672,11 @@ EOF
     fi
 
     # ---------- Build ----------
+    info_msg "Memperbarui data browserslist (hanya menghilangkan peringatan)..."
+    $SUDO env npm_config_yes=true npx update-browserslist-db@latest >/dev/null 2>&1 || true
+
     info_msg "Build frontend (beberapa menit)..."
-    if ! $SUDO env NODE_OPTIONS=--openssl-legacy-provider yarn build:production; then
+    if ! $SUDO env NODE_OPTIONS=--openssl-legacy-provider BROWSERSLIST_IGNORE_OLD_DATA=true yarn build:production; then
       neo_fail "Build frontend gagal. Backup: $BACKUP_FILE"
       return
     fi
