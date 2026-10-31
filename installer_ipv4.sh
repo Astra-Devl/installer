@@ -347,12 +347,15 @@ class ApiController extends Controller
     }
 
     /**
-     * Render view showing all of a user's application API keys.
+     * Render view showing only the application API keys owned by the current admin.
      */
     public function index(Request $request): View
     {
         return view('admin.api.index', [
-            'keys' => ApiKey::query()->where('key_type', ApiKey::TYPE_APPLICATION)->get(),
+            'keys' => ApiKey::query()
+                ->where('key_type', ApiKey::TYPE_APPLICATION)
+                ->where('user_id', $request->user()->id)
+                ->get(),
         ]);
     }
 
@@ -396,12 +399,13 @@ class ApiController extends Controller
     }
 
     /**
-     * Delete an application API key from the database.
+     * Delete an application API key. Only the owner of the key can delete it.
      */
     public function delete(Request $request, string $identifier): Response
     {
         ApiKey::query()
             ->where('key_type', ApiKey::TYPE_APPLICATION)
+            ->where('user_id', $request->user()->id)
             ->where('identifier', $identifier)
             ->delete();
 
