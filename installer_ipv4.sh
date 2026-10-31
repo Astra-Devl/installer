@@ -1,11 +1,14 @@
 #!/bin/bash
 # =====================================================================
 #  Installer: Whitelist IP otomatis untuk API key ptla (Pterodactyl)
+#  Support: IPv4, IPv4:port (port diabaikan), [IPv6], [IPv6]:port, CIDR
 #
 #  Pakai:
-#    bash installer.sh                 -> IP VPS dideteksi otomatis
-#    bash installer.sh 1.2.3.4         -> pakai IP manual
-#    bash installer.sh --restore       -> kembalikan file dari backup terakhir
+#    bash installer.sh                          -> tampilkan MENU (install/uninstall/status)
+#    bash installer.sh install                  -> install, IPv4/IPv6 dideteksi otomatis
+#    bash installer.sh install 1.2.3.4:8080 2001:db8::1 -> install dengan IP manual
+#    bash installer.sh uninstall                -> uninstall protect (kembalikan file asli)
+#    bash installer.sh status                   -> cek status protect
 #
 #  Opsional: PANEL_DIR=/path/panel bash installer.sh
 # =====================================================================
@@ -13,7 +16,10 @@
 PANEL="${PANEL_DIR:-/var/www/pterodactyl}"
 CTRL="$PANEL/app/Http/Controllers/Admin/ApiController.php"
 VIEW="$PANEL/resources/views/admin/api/new.blade.php"
-MW="$PANEL/app/Http/Middleware/Api/AuthenticateIPAccess.php"
+MWDIR="$PANEL/app/Http/Middleware/Api"
+MW="$MWDIR/PtlaIpWhitelist.php"
+KERNEL="$PANEL/app/Http/Kernel.php"
+ENVF="$PANEL/.env"
 BACKUP_ROOT="$PANEL/backup-ptla"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -37,56 +43,279 @@ clear_cache() {
 fix_owner() {
   OWNER="www-data:www-data"
   id nginx >/dev/null 2>&1 && OWNER="nginx:nginx"
-  chown "$OWNER" "$CTRL" "$VIEW" 2>/dev/null
+  chown "$OWNER" "$CTRL" "$VIEW" "$KERNEL" "$MW" 2>/dev/null
 }
 
-# ---------------------------- RESTORE --------------------------------
-if [ "$1" = "--restore" ]; then
-  LAST=$(ls -1dt "$BACKUP_ROOT"/*/ 2>/dev/null | head -n1)
-  if [ -z "$LAST" ]; then
-    echo "[!] Tidak ada backup di $BACKUP_ROOT"
-    exit 1
+# ---------------------------- STATUS ---------------------------------
+do_status() {
+  echo "---------------- STATUS PROTECT ----------------"
+  [ -f "$MW" ] && echo "[v] Middleware PtlaIpWhitelist : ada" || echo "[x] Middleware PtlaIpWhitelist : tidak ada"
+  grep -q "PtlaIpWhitelist" "$KERNEL" 2>/dev/null && echo "[v] Terdaftar di Kernel.php     : ya" || echo "[x] Terdaftar di Kernel.php     : tidak"
+  grep -q "PtlaIpWhitelist" "$CTRL" 2>/dev/null && echo "[v] ApiController (whitelist)  : terpasang" || echo "[x] ApiController (whitelist)  : belum"
+  grep -q "PtlaIpWhitelist" "$VIEW" 2>/dev/null && echo "[v] new.blade.php (field IP)   : terpasang" || echo "[x] new.blade.php (field IP)   : belum"
+  CUR=$(grep "^PTLA_VPS_IPS=" "$ENVF" 2>/dev/null | cut -d= -f2-)
+  echo "[i] PTLA_VPS_IPS di .env       : ${CUR:-(kosong)}"
+  echo "------------------------------------------------"
+}
+
+# ---------------------------- UNINSTALL ------------------------------
+do_uninstall() {
+  # Backup paling lama = file asli sebelum protect dipasang
+  ORIG=$(ls -1dt "$BACKUP_ROOT"/*/ 2>/dev/null | tail -n1)
+  if [ -z "$ORIG" ] || [ ! -f "$ORIG/ApiController.php" ] || [ ! -f "$ORIG/new.blade.php" ]; then
+    echo "[!] Backup file asli tidak ditemukan di $BACKUP_ROOT"
+    echo "    Uninstall dibatalkan supaya panel tidak rusak."
+    return 1
   fi
-  cp "$LAST/ApiController.php" "$CTRL" 2>/dev/null && echo "[+] ApiController dikembalikan"
-  cp "$LAST/new.blade.php" "$VIEW" 2>/dev/null && echo "[+] new.blade.php dikembalikan"
-  [ -f "$LAST/AuthenticateIPAccess.php" ] && cp "$LAST/AuthenticateIPAccess.php" "$MW" && echo "[+] Middleware dikembalikan"
+  if grep -q "PtlaIpWhitelist" "$ORIG/ApiController.php" "$ORIG/new.blade.php"; then
+    echo "[!] Backup terdeteksi sudah berisi protect (bukan file asli)."
+    echo "    Uninstall dibatalkan. Kembalikan file asli manual dari panel resmi."
+    return 1
+  fi
+
+  echo "[*] Mengembalikan file asli dari $ORIG"
+  cp "$ORIG/ApiController.php" "$CTRL" && echo "[+] ApiController dikembalikan"
+  cp "$ORIG/new.blade.php" "$VIEW" && echo "[+] new.blade.php dikembalikan"
+
+  if grep -q "PtlaIpWhitelist" "$KERNEL"; then
+    cp "$KERNEL" "$KERNEL.bak-ptla"
+    sed -i '/PtlaIpWhitelist/d' "$KERNEL"
+    if php -l "$KERNEL" >/dev/null 2>&1; then
+      rm -f "$KERNEL.bak-ptla"
+      echo "[+] Baris middleware dihapus dari Kernel.php"
+    else
+      cp "$KERNEL.bak-ptla" "$KERNEL"
+      echo "[!] Gagal membersihkan Kernel.php, dikembalikan. Hapus baris PtlaIpWhitelist manual."
+    fi
+  fi
+
+  rm -f "$MW" && echo "[+] Middleware PtlaIpWhitelist dihapus"
+  sed -i '/^PTLA_VPS_IPS=/d' "$ENVF" && echo "[+] PTLA_VPS_IPS dihapus dari .env"
+
+  if [ -t 0 ]; then
+    read -rp "Hapus juga whitelist IP dari semua key ptla yang sudah ada? [y/N]: " ans </dev/tty
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      (cd "$PANEL" && php artisan tinker --execute="\Pterodactyl\Models\ApiKey::where('key_type', 2)->update(['allowed_ips' => null]); echo 'ok';" >/dev/null 2>&1) \
+        && echo "[+] Whitelist IP di key ptla dihapus" \
+        || echo "[!] Gagal update key ptla (bisa diabaikan)"
+    fi
+  fi
+
   fix_owner
   clear_cache
-  echo "[OK] Restore selesai dari $LAST"
-  exit 0
+  echo "[OK] Uninstall protect selesai."
+}
+
+# ---------------------------- HELPER IP ------------------------------
+# Hapus port & kurung: 1.2.3.4:8080 -> 1.2.3.4 | [2001:db8::1]:443 -> 2001:db8::1
+normalize_ip() {
+  local v="${1//[[:space:]]/}"
+  local re6='^\[([^]]+)\](:[0-9]+)?(/[0-9]+)?$'
+  local re4='^([0-9]{1,3}(\.[0-9]{1,3}){3}):[0-9]+(/[0-9]+)?$'
+  if [[ "$v" =~ $re6 ]]; then
+    echo "${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+  elif [[ "$v" =~ $re4 ]]; then
+    echo "${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+  else
+    echo "$v"
+  fi
+}
+
+valid_ip() {
+  local base="${1%%/*}"
+  [ -n "$base" ] && php -r 'exit(filter_var($argv[1], FILTER_VALIDATE_IP) ? 0 : 1);' "$base"
+}
+
+# ---------------------------- INSTALL --------------------------------
+do_install() {
+RAW=()
+if [ "$#" -gt 0 ]; then
+  for arg in "$@"; do
+    IFS=',' read -ra PARTS <<< "$arg"
+    for p in "${PARTS[@]}"; do RAW+=("$p"); done
+  done
+else
+  V4=$(curl -4 -s --max-time 8 ifconfig.me)
+  V6=$(curl -6 -s --max-time 8 ifconfig.me)
+  [ -n "$V4" ] && RAW+=("$V4")
+  [ -n "$V6" ] && RAW+=("$V6")
 fi
 
-# ---------------------------- DETEKSI IP -----------------------------
-IP="$1"
-if [ -z "$IP" ]; then
-  IP=$(curl -4 -s --max-time 8 ifconfig.me)
+IPS=()
+for r in "${RAW[@]}"; do
+  n=$(normalize_ip "$r")
+  if valid_ip "$n"; then
+    IPS+=("$n")
+  else
+    echo "[!] IP dilewati (tidak valid): $r"
+  fi
+done
+
+if [ "${#IPS[@]}" -eq 0 ]; then
+  echo "[!] Tidak ada IP valid. Jalankan: bash installer.sh install IP_VPS_KAMU"
+  return 1
 fi
-if ! echo "$IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-  echo "[!] IPv4 tidak valid / gagal terdeteksi: '$IP'"
-  echo "    Jalankan: bash installer.sh IP_VPS_KAMU"
-  exit 1
-fi
-echo "[*] IP VPS yang di-whitelist: $IP"
+
+IP_CSV=$(IFS=','; echo "${IPS[*]}")
+echo "[*] IP yang di-whitelist: $IP_CSV"
 
 # ---------------------------- BACKUP ---------------------------------
-BK="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BK"
-cp "$CTRL" "$BK/ApiController.php"
-cp "$VIEW" "$BK/new.blade.php"
-[ -f "$MW" ] && cp "$MW" "$BK/AuthenticateIPAccess.php"
-echo "[+] Backup tersimpan di $BK"
+if grep -q "PtlaIpWhitelist" "$CTRL" 2>/dev/null; then
+  # Sudah pernah di-install: jangan timpa backup file asli
+  BK=$(ls -1dt "$BACKUP_ROOT"/*/ 2>/dev/null | tail -n1)
+  echo "[=] Protect sudah terpasang sebelumnya, backup asli dipertahankan (${BK:-tidak ada})"
+else
+  BK="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$BK"
+  cp "$CTRL" "$BK/ApiController.php"
+  cp "$VIEW" "$BK/new.blade.php"
+  cp "$KERNEL" "$BK/Kernel.php"
+  echo "[+] Backup file asli tersimpan di $BK"
+fi
 
 # ---------------------------- MIDDLEWARE -----------------------------
-# Kalau sebelumnya memasang middleware custom, kembalikan ke bawaan
-if [ -f "$MW" ] && grep -q "PTLA_VPS_IPS" "$MW"; then
-  ORIG=$(ls -1t "$PANEL"/app/Http/Middleware/Api/AuthenticateIPAccess.php.bak* 2>/dev/null | head -n1)
-  if [ -n "$ORIG" ]; then
-    cp "$ORIG" "$MW"
-    echo "[+] Middleware custom dikembalikan dari $ORIG"
+mkdir -p "$MWDIR"
+cat > "$MW" <<'PHPEOF'
+<?php
+
+namespace Pterodactyl\Http\Middleware\Api;
+
+use Closure;
+use Illuminate\Http\Request;
+use Pterodactyl\Models\ApiKey;
+use Symfony\Component\HttpFoundation\IpUtils;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+
+/**
+ * Whitelist IP otomatis untuk API key Application (ptla_).
+ *
+ * - Port source (acak) tidak berpengaruh: yang dicek hanya alamat IP.
+ * - Mendukung IPv4, IPv6, CIDR, serta input berformat ip:port / [ipv6]:port.
+ */
+class PtlaIpWhitelist
+{
+    public function handle(Request $request, Closure $next)
+    {
+        $key = $request->attributes->get('api_key');
+
+        // Hanya berlaku untuk key Application (ptla_)
+        if (!$key instanceof ApiKey || (int) $key->key_type !== ApiKey::TYPE_APPLICATION) {
+            return $next($request);
+        }
+
+        $client = self::normalize((string) $request->ip());
+        $allowed = self::serverIps();
+
+        foreach ((array) $key->allowed_ips as $ip) {
+            $n = self::normalize((string) $ip);
+            if ($n !== null) {
+                $allowed[] = $n;
+            }
+        }
+
+        if ($client !== null && IpUtils::checkIp($client, array_values(array_unique($allowed)))) {
+            return $next($request);
+        }
+
+        throw new AccessDeniedHttpException('API key ini hanya bisa digunakan dari IP VPS panel. IP kamu (' . $request->ip() . ') ditolak.');
+    }
+
+    /**
+     * IP yang selalu diizinkan: loopback + IP server + isi PTLA_VPS_IPS di .env.
+     */
+    public static function serverIps(): array
+    {
+        $list = ['127.0.0.1', '::1'];
+
+        if (!empty($_SERVER['SERVER_ADDR'])) {
+            $list[] = $_SERVER['SERVER_ADDR'];
+        }
+
+        foreach (explode(',', (string) env('PTLA_VPS_IPS', '')) as $item) {
+            $list[] = $item;
+        }
+
+        $out = [];
+        foreach ($list as $item) {
+            $n = self::normalize((string) $item);
+            if ($n !== null) {
+                $out[] = $n;
+            }
+        }
+
+        return array_values(array_unique($out));
+    }
+
+    /**
+     * Rapikan input IP: buang port, kurung, zone id; ubah ::ffff:1.2.3.4 jadi IPv4.
+     * Return null jika tidak valid.
+     */
+    public static function normalize(string $value): ?string
+    {
+        $v = trim($value);
+        if ($v === '') {
+            return null;
+        }
+
+        $mask = null;
+        if (strpos($v, '/') !== false) {
+            [$v, $mask] = explode('/', $v, 2);
+        }
+
+        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $v, $m)) {
+            $v = $m[1];
+        } elseif (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $v, $m)) {
+            $v = $m[1];
+        }
+
+        $v = preg_replace('/%.+$/', '', $v);
+
+        if (preg_match('/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i', $v, $m)) {
+            $v = $m[1];
+        }
+
+        if (!filter_var($v, FILTER_VALIDATE_IP)) {
+            return null;
+        }
+
+        if ($mask !== null) {
+            $max = filter_var($v, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? 32 : 128;
+            if (!ctype_digit($mask) || (int) $mask > $max) {
+                return null;
+            }
+
+            return $v . '/' . $mask;
+        }
+
+        return $v;
+    }
+}
+PHPEOF
+echo "[+] Middleware PtlaIpWhitelist terpasang"
+
+# ---------------------------- Kernel.php -----------------------------
+if grep -q "PtlaIpWhitelist" "$KERNEL"; then
+  echo "[=] Kernel.php sudah terdaftar, dilewati"
+else
+  TMPK=$(mktemp)
+  awk '
+    /application-api/ { inapp=1 }
+    { print }
+    inapp && /AuthenticateApplicationUser::class,/ {
+      print "            \\Pterodactyl\\Http\\Middleware\\Api\\PtlaIpWhitelist::class,"
+      inapp=0
+    }
+  ' "$KERNEL" > "$TMPK"
+
+  if grep -q "PtlaIpWhitelist" "$TMPK" && php -l "$TMPK" >/dev/null 2>&1; then
+    cp "$TMPK" "$KERNEL"
+    echo "[+] Middleware didaftarkan di grup application-api (Kernel.php)"
   else
-    echo "[!] Middleware custom terdeteksi tapi backup asli tidak ditemukan."
-    echo "    Kembalikan manual / jalankan: cd $PANEL && php artisan p:upgrade"
+    echo "[!] Gagal mendaftarkan otomatis di Kernel.php (struktur berbeda)."
+    echo "    Tambahkan manual di grup 'application-api' pada $KERNEL:"
+    echo "        \\Pterodactyl\\Http\\Middleware\\Api\\PtlaIpWhitelist::class,"
   fi
+  rm -f "$TMPK"
 fi
 
 # ---------------------------- ApiController --------------------------
@@ -149,21 +378,16 @@ class ApiController extends Controller
 
     /**
      * Store the new key and redirect the user back to the application key listing.
-     * Whitelist IP VPS otomatis ditambahkan ke setiap key ptla yang dibuat.
+     * Whitelist IP VPS (IPv4/IPv6) otomatis ditambahkan ke setiap key ptla yang dibuat.
      *
      * @throws \Pterodactyl\Exceptions\Model\DataValidationException
      */
     public function store(StoreApplicationApiKeyRequest $request): RedirectResponse
     {
-        $ips = array_values(array_unique(array_filter(array_merge(
-            ['127.0.0.1', '::1', $_SERVER['SERVER_ADDR'] ?? null],
-            array_map('trim', explode(',', (string) env('PTLA_VPS_IPS', '')))
-        ))));
-
         $this->keyCreationService->setKeyType(ApiKey::TYPE_APPLICATION)->handle([
             'memo' => $request->input('memo'),
             'user_id' => $request->user()->id,
-            'allowed_ips' => $ips,
+            'allowed_ips' => \Pterodactyl\Http\Middleware\Api\PtlaIpWhitelist::serverIps(),
         ], $request->getKeyPermissions());
 
         $this->alert->success('A new application API key has been generated for your account.')->flash();
@@ -262,8 +486,8 @@ cat > "$VIEW" <<'BLADEEOF'
                         </div>
                         <div class="form-group">
                             <label class="control-label" for="whitelistIpField">Whitelist IP (otomatis IP VPS)</label>
-                            <input id="whitelistIpField" type="text" class="form-control" value="{{ env('PTLA_VPS_IPS', $_SERVER['SERVER_ADDR'] ?? '') }}" readonly>
-                            <p class="text-muted small" style="margin-top: 5px;">Key ini hanya bisa dipakai dari IP VPS di atas. Request dari IP lain otomatis ditolak.</p>
+                            <input id="whitelistIpField" type="text" class="form-control" value="{{ implode(', ', \Pterodactyl\Http\Middleware\Api\PtlaIpWhitelist::serverIps()) }}" readonly>
+                            <p class="text-muted small" style="margin-top: 5px;">Key ini hanya bisa dipakai dari IP VPS di atas (IPv4/IPv6). Port tidak berpengaruh. Request dari IP lain otomatis ditolak.</p>
                         </div>
                         <p class="text-muted">Once you have assigned permissions and created this set of credentials you will be unable to come back and edit it. If you need to make changes down the road you will need to create a new set of credentials.</p>
                     </div>
@@ -326,26 +550,58 @@ BLADEEOF
 echo "[+] new.blade.php terpasang"
 
 # ---------------------------- .env -----------------------------------
-ENVF="$PANEL/.env"
 if grep -q "^PTLA_VPS_IPS=" "$ENVF"; then
-  sed -i "s|^PTLA_VPS_IPS=.*|PTLA_VPS_IPS=$IP|" "$ENVF"
+  sed -i "s|^PTLA_VPS_IPS=.*|PTLA_VPS_IPS=$IP_CSV|" "$ENVF"
 else
-  printf "\nPTLA_VPS_IPS=%s\n" "$IP" >> "$ENVF"
+  printf "\nPTLA_VPS_IPS=%s\n" "$IP_CSV" >> "$ENVF"
 fi
-echo "[+] .env diisi PTLA_VPS_IPS=$IP"
-
-# ---------------------------- key ptla lama --------------------------
-cd "$PANEL" || exit 1
-clear_cache
-php artisan tinker --execute="\Pterodactyl\Models\ApiKey::where('key_type', 2)->update(['allowed_ips' => ['127.0.0.1', '::1', '$IP']]); echo 'ok';" >/dev/null 2>&1 \
-  && echo "[+] Semua key ptla lama sudah di-whitelist" \
-  || echo "[!] Gagal update key lama otomatis (tidak masalah, key baru tetap ter-whitelist)"
+echo "[+] .env diisi PTLA_VPS_IPS=$IP_CSV"
 
 # ---------------------------- selesai --------------------------------
 fix_owner
 clear_cache
 echo ""
 echo "[OK] Instalasi selesai."
-echo "     Whitelist IP ptla : 127.0.0.1, ::1, $IP"
-echo "     Backup            : $BK"
-echo "     Kembalikan        : bash installer.sh --restore"
+echo "     Whitelist ptla : $IP_CSV (+ 127.0.0.1, ::1, IP server)"
+echo "     Backup         : $BK"
+echo "     Uninstall      : bash installer.sh uninstall"
+echo "     Catatan        : jangan jalankan 'php artisan config:cache' (.env harus terbaca)"
+}
+
+# ---------------------------- MENU -----------------------------------
+show_menu() {
+  while true; do
+    echo ""
+    echo "=========== PTLA IP PROTECT ==========="
+    echo "  1) Install protect"
+    echo "  2) Uninstall protect"
+    echo "  3) Cek status"
+    echo "  0) Keluar"
+    echo "======================================="
+    read -rp "Pilih [0-3]: " choice </dev/tty
+    case "$choice" in
+      1)
+        read -rp "IP VPS (pisah spasi/koma, boleh ip:port / IPv6, kosong = deteksi otomatis): " ips </dev/tty
+        ips="${ips//,/ }"
+        # shellcheck disable=SC2086
+        do_install $ips
+        ;;
+      2)
+        read -rp "Yakin uninstall protect? [y/N]: " yn </dev/tty
+        [[ "$yn" =~ ^[Yy]$ ]] && do_uninstall || echo "Dibatalkan."
+        ;;
+      3) do_status ;;
+      0) echo "Keluar."; exit 0 ;;
+      *) echo "Pilihan tidak valid." ;;
+    esac
+  done
+}
+
+# ---------------------------- DISPATCH -------------------------------
+case "$1" in
+  "")                  show_menu ;;
+  install)             shift; do_install "$@" ;;
+  uninstall|--restore) do_uninstall ;;
+  status)              do_status ;;
+  *)                   do_install "$@" ;;   # kompatibel: bash installer.sh 1.2.3.4
+esac
