@@ -243,16 +243,13 @@ class PanelProtect
             self::deny($request, 'Halaman ini hanya bisa diakses oleh owner panel.');
         }
 
-        // Daftar semua server (milik user) ditolak untuk admin selain owner.
-        if ($section === 'servers' && count($seg) === 2) {
-            self::deny($request, 'Daftar server milik user hanya bisa dilihat oleh owner panel.');
-        }
-
-        // Server orang lain: tidak boleh dibuka / diubah / dihapus.
-        if ($section === 'servers' && ($seg[2] ?? '') === 'view' && isset($seg[3]) && ctype_digit($seg[3])) {
+        // Halaman server di admin (daftar, detail, edit) tetap bisa dibuka.
+        // Yang ditolak hanya menghapus server milik orang lain.
+        if ($section === 'servers' && ($seg[2] ?? '') === 'view' && isset($seg[3]) && ctype_digit($seg[3])
+            && ($seg[4] ?? '') === 'delete') {
             $server = Server::query()->find((int) $seg[3]);
             if ($server && (int) $server->owner_id !== (int) $user->id) {
-                self::deny($request, 'Kamu tidak boleh membuka atau mengubah server milik orang lain.');
+                self::deny($request, 'Kamu tidak boleh menghapus server milik orang lain.');
             }
         }
 
