@@ -149,12 +149,20 @@ theme_save() { # login app admin
 }
 
 theme_inject() { # file, area
-  local f="$1" area="$2"
+  local f="$1" area="$2" tag
   [[ -f "$f" ]] || { warn "Tidak ditemukan: $(rel_of "$f")"; return 1; }
   if grep -q 'partials.protect-theme' "$f"; then return 0; fi
-  AREA="$area" perl -0pi -e 's#</head>#\@includeIf("partials.protect-theme", ["area" => "$ENV{AREA}"])\n</head>#' "$f"
-  grep -q 'partials.protect-theme' "$f" || { warn "Tag </head> tidak ditemukan di $(rel_of "$f")"; return 1; }
-  info "Patch tema: $(rel_of "$f")"
+  # Coba sisipkan sebelum </head>, lalu sebelum </body> (tanpa peduli huruf besar/kecil).
+  for tag in '</head\s*>' '</body\s*>'; do
+    AREA="$area" TAG="$tag" perl -0pi -e 'my $i = q{@includeIf("partials.protect-theme", ["area" => "} . $ENV{AREA} . q{"])}; s/($ENV{TAG})/$i\n$1/i' "$f"
+    if grep -q 'partials.protect-theme' "$f"; then
+      info "Patch tema: $(rel_of "$f") (sebelum ${tag%%\\*}>)"
+      return 0
+    fi
+  done
+  # Fallback terakhir: tambahkan di akhir file.
+  printf '\n@includeIf("partials.protect-theme", ["area" => "%s"])\n' "$area" >> "$f"
+  warn "Tag </head> dan </body> tidak ada di $(rel_of "$f"); include ditambahkan di akhir file."
 }
 theme_inject_all() {
   theme_inject "$THEME_USER_VIEW" user || true
