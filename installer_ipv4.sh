@@ -5,9 +5,10 @@
 #     bash protect-pterodactyl.sh              -> menu (Install / Uninstall Protect)
 #     bash protect-pterodactyl.sh install      -> langsung install / update
 #     bash protect-pterodactyl.sh uninstall    -> langsung uninstall (wajib isi IP VPS)
+#     bash protect-pterodactyl.sh theme-login | theme-app | theme-admin | theme-all | theme-uninstall
 #  Format IP: IPv4, IPv6, atau IPv4:port / [IPv6]:port (port acak diabaikan)
 #  Opsional (env): PANEL_DIR=/var/www/pterodactyl SUPPORT_URL=https://t.me/xxx
-#                  ALLOWED_IPS="IP_TAMBAHAN"(opsional)  UNINSTALL_IP="1.2.3.4"
+#                  ALLOWED_IPS="IP_TAMBAHAN"(opsional)  UNINSTALL_IP="1.2.3.4"  VPS_IP="1.2.3.4"
 # =============================================================================
 set -euo pipefail
 
@@ -106,12 +107,14 @@ restore_original() {
     while read -r rel; do rm -f "$PANEL_DIR/$rel"; done < "$BK/created.list"
   fi
   rm -rf "$PROTECT_DIR" "$BK"
+  # file blade yang dikembalikan bisa menghapus injeksi tema: pasang ulang bila tema aktif
+  if [[ -f "${THEME_CFG:-/nonexistent}" ]]; then theme_inject_all || true; fi
   post_steps
 }
 
 # Uninstall: wajib isi IP VPS (IP panel atau IP whitelist) sebagai konfirmasi
 uninstall_protect() {
-  [[ -d "$BK" ]] || die "Protect belum terpasang (backup tidak ditemukan)."
+  [[ -d "$BK" && -d "$PROTECT_DIR" ]] || die "Protect belum terpasang (backup tidak ditemukan)."
   local known input="${UNINSTALL_IP:-}" ip tries=0
   known="$(cat "$PROTECT_DIR/panel_ips.txt" "$PROTECT_DIR/allowed_ips.txt" 2>/dev/null | tr 'A-F' 'a-f' | sort -u || true)"
   while (( tries < 3 )); do
@@ -130,25 +133,608 @@ uninstall_protect() {
   die "Verifikasi IP gagal. Uninstall dibatalkan."
 }
 
+# =================================================================== TEMA ===
+# Tema Neo Brutalism tanpa build ulang frontend: CSS + JS disuntik lewat Blade.
+THEME_DIR="$PANEL_DIR/storage/protect-theme"
+THEME_CFG="$THEME_DIR/theme.json"
+THEME_PUB="$PANEL_DIR/public/protect-theme"
+THEME_PARTIAL="$PANEL_DIR/resources/views/partials/protect-theme.blade.php"
+THEME_USER_VIEW="$PANEL_DIR/resources/views/templates/base/core.blade.php"
+THEME_ADMIN_VIEW="$PANEL_DIR/resources/views/layouts/admin.blade.php"
+
+theme_flag() { if grep -q "\"$1\":true" "$THEME_CFG" 2>/dev/null; then echo true; else echo false; fi; }
+theme_save() { # login app admin
+  mkdir -p "$THEME_DIR"
+  printf '{"v":"%s","login":%s,"app":%s,"admin":%s}\n' "$(date +%s)" "$1" "$2" "$3" > "$THEME_CFG"
+}
+
+theme_inject() { # file, area
+  local f="$1" area="$2"
+  [[ -f "$f" ]] || { warn "Tidak ditemukan: $(rel_of "$f")"; return 1; }
+  if grep -q 'partials.protect-theme' "$f"; then return 0; fi
+  AREA="$area" perl -0pi -e 's#</head>#\@includeIf("partials.protect-theme", ["area" => "$ENV{AREA}"])\n</head>#' "$f"
+  grep -q 'partials.protect-theme' "$f" || { warn "Tag </head> tidak ditemukan di $(rel_of "$f")"; return 1; }
+  info "Patch tema: $(rel_of "$f")"
+}
+theme_inject_all() {
+  theme_inject "$THEME_USER_VIEW" user || true
+  theme_inject "$THEME_ADMIN_VIEW" admin || true
+}
+
+theme_write_partial() {
+  mkdir -p "$(dirname "$THEME_PARTIAL")"
+  cat > "$THEME_PARTIAL" <<'BLADE'
+@php
+    $__th = json_decode((string) @file_get_contents(storage_path('protect-theme/theme.json')), true) ?: [];
+    $__v = $__th['v'] ?? '1';
+    $__admin = ($area ?? 'user') === 'admin';
+@endphp
+@if ($__admin)
+    @if (!empty($__th['admin']))
+        <link rel="stylesheet" href="/protect-theme/base.css?v={{ $__v }}">
+        <link rel="stylesheet" href="/protect-theme/admin.css?v={{ $__v }}">
+    @endif
+@elseif (!empty($__th['login']) || !empty($__th['app']))
+    <link rel="stylesheet" href="/protect-theme/base.css?v={{ $__v }}">
+    <script>document.documentElement.classList.add(location.pathname.indexOf('/auth') === 0 ? 'ptn-auth' : 'ptn-app');</script>
+    @if (!empty($__th['login']))
+        <link rel="stylesheet" href="/protect-theme/login.css?v={{ $__v }}">
+    @endif
+    @if (!empty($__th['app']))
+        <link rel="stylesheet" href="/protect-theme/app.css?v={{ $__v }}">
+        <script src="/protect-theme/sidebar.js?v={{ $__v }}" defer></script>
+    @endif
+@endif
+BLADE
+}
+
+theme_write_base() {
+  cat > "$THEME_PUB/base.css" <<'CSS'
+/* Neo Brutalism - variabel dasar */
+:root{
+  --ptn-bg:#FFF4D6;--ptn-ink:#111111;
+  --ptn-yellow:#FFD60A;--ptn-pink:#FF6B9D;--ptn-blue:#4D96FF;--ptn-green:#5BE584;--ptn-orange:#FF9F1C;
+  --ptn-border:3px solid #111;
+  --ptn-shadow:6px 6px 0 #111;--ptn-shadow-sm:3px 3px 0 #111;
+  --ptn-font:"Space Grotesk","Archivo",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --ptn-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+::selection{background:var(--ptn-yellow);color:#111}
+CSS
+}
+
+theme_write_login() {
+  cat > "$THEME_PUB/login.css" <<'CSS'
+/* Neo Brutalism - halaman login (/auth/*) */
+html.ptn-auth body{
+  background-color:var(--ptn-bg)!important;
+  background-image:radial-gradient(rgba(17,17,17,.14) 1.5px,transparent 1.5px);
+  background-size:24px 24px;
+  color:var(--ptn-ink)!important;font-family:var(--ptn-font)!important;
+}
+html.ptn-auth #app,html.ptn-auth #app > div{background:transparent!important}
+html.ptn-auth form > div{
+  background:#fff!important;border:4px solid #111!important;border-radius:0!important;
+  box-shadow:10px 10px 0 #111!important;position:relative;
+}
+html.ptn-auth form > div::before{
+  content:"LOGIN";position:absolute;top:-18px;left:18px;padding:3px 12px;
+  background:var(--ptn-yellow);border:3px solid #111;font:900 13px/1.4 var(--ptn-font);letter-spacing:.14em;color:#111;
+}
+html.ptn-auth h1,html.ptn-auth h2,html.ptn-auth h3{
+  color:#111!important;font-weight:900!important;text-transform:uppercase;letter-spacing:-.01em;
+}
+html.ptn-auth label{
+  color:#111!important;font-weight:800!important;text-transform:uppercase;font-size:12px!important;letter-spacing:.06em;
+}
+html.ptn-auth input:not([type=checkbox]):not([type=radio]){
+  background:#fff!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
+  box-shadow:4px 4px 0 #111!important;font-family:var(--ptn-font)!important;font-weight:600;
+}
+html.ptn-auth input:focus{outline:none!important;background:#FFFBD6!important;box-shadow:6px 6px 0 #111!important}
+html.ptn-auth button[type=submit],html.ptn-auth button.ptn-btn{
+  background:var(--ptn-yellow)!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
+  box-shadow:5px 5px 0 #111!important;font:900 14px var(--ptn-font)!important;text-transform:uppercase;letter-spacing:.06em;
+  transition:transform .08s,box-shadow .08s;
+}
+html.ptn-auth button[type=submit]:hover{transform:translate(-2px,-2px);box-shadow:8px 8px 0 #111!important;background:var(--ptn-pink)!important}
+html.ptn-auth button[type=submit]:active{transform:translate(4px,4px);box-shadow:0 0 0 #111!important}
+html.ptn-auth a{color:#111!important;font-weight:800;text-decoration:underline;text-decoration-thickness:3px;text-decoration-color:var(--ptn-yellow);text-underline-offset:3px}
+html.ptn-auth a:hover{background:var(--ptn-yellow)}
+html.ptn-auth p{color:#111!important}
+html.ptn-auth img{filter:none}
+CSS
+}
+
+theme_write_app() {
+  cat > "$THEME_PUB/app.css" <<'CSS'
+/* Neo Brutalism - dashboard utama (client area) + sidebar */
+html.ptn-app body{
+  background-color:var(--ptn-bg)!important;
+  background-image:radial-gradient(rgba(17,17,17,.12) 1.5px,transparent 1.5px);
+  background-size:24px 24px;color:var(--ptn-ink);font-family:var(--ptn-font);
+}
+html.ptn-app #app{min-height:100vh}
+html.ptn-app.ptn-has-sidebar #app{margin-left:270px}
+html.ptn-app.ptn-has-sidebar .ptn-hide{display:none!important}
+html.ptn-app h1,html.ptn-app h2,html.ptn-app h3{font-weight:900;text-transform:uppercase;letter-spacing:-.01em}
+
+/* hasil pewarnaan otomatis (sidebar.js) */
+html.ptn-app .ptn-s0{background:transparent!important}
+html.ptn-app .ptn-s1{background:#fff!important;border:3px solid #111!important;box-shadow:5px 5px 0 #111!important;border-radius:0!important}
+html.ptn-app .ptn-s2{background:var(--ptn-bg)!important;border:2px solid #111!important;border-radius:0!important;box-shadow:none!important}
+html.ptn-app .ptn-accent{border:3px solid #111!important;box-shadow:3px 3px 0 #111!important;border-radius:0!important;filter:saturate(1.35)}
+html.ptn-app .ptn-t{color:#111!important}
+html.ptn-app button.ptn-s1,html.ptn-app button.ptn-s2,html.ptn-app a.ptn-s1,html.ptn-app a.ptn-s2{
+  background:#fff!important;box-shadow:3px 3px 0 #111!important;font-weight:800;
+}
+html.ptn-app button.ptn-s1:hover,html.ptn-app button.ptn-s2:hover,html.ptn-app a.ptn-s1:hover,html.ptn-app a.ptn-s2:hover{background:var(--ptn-yellow)!important}
+html.ptn-app button.ptn-accent,html.ptn-app a.ptn-accent{font-weight:800;transition:transform .08s,box-shadow .08s}
+html.ptn-app button.ptn-accent:hover,html.ptn-app a.ptn-accent:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111!important}
+html.ptn-app button.ptn-accent:active{transform:translate(2px,2px);box-shadow:none!important}
+
+html.ptn-app input:not([type=checkbox]):not([type=radio]),html.ptn-app select,html.ptn-app textarea{
+  background:#fff!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
+  box-shadow:3px 3px 0 #111!important;font-family:var(--ptn-font);
+}
+html.ptn-app input:focus,html.ptn-app select:focus,html.ptn-app textarea:focus{outline:none!important;background:#FFFBD6!important}
+html.ptn-app table{border-collapse:separate;border-spacing:0}
+html.ptn-app code,html.ptn-app pre,html.ptn-app .font-mono{font-family:var(--ptn-mono)}
+html.ptn-app .xterm{border:3px solid #111}
+
+/* sidebar */
+#ptn-sidebar{
+  position:fixed;top:0;bottom:0;left:0;width:270px;z-index:60;display:flex;flex-direction:column;
+  background:var(--ptn-yellow);border-right:4px solid #111;overflow-y:auto;font-family:var(--ptn-font);color:#111;
+}
+#ptn-sidebar .ptn-brand{
+  padding:18px;background:#111;color:var(--ptn-yellow);border-bottom:4px solid #111;
+  font-weight:900;font-size:22px;letter-spacing:-.02em;text-transform:uppercase;word-break:break-word;
+}
+#ptn-sidebar nav{display:flex;flex-direction:column;gap:10px;padding:14px;flex:1}
+#ptn-sidebar .ptn-label{margin:8px 2px 0;font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase}
+#ptn-sidebar a,#ptn-sidebar button{
+  display:flex;align-items:center;gap:10px;width:100%;padding:11px 14px;text-align:left;cursor:pointer;
+  background:#fff;color:#111;border:3px solid #111;border-radius:0;box-shadow:4px 4px 0 #111;
+  font:800 13px var(--ptn-font);text-transform:uppercase;letter-spacing:.03em;text-decoration:none;
+  transition:transform .08s,box-shadow .08s,background .08s;
+}
+#ptn-sidebar a:hover,#ptn-sidebar button:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111;background:var(--ptn-bg)}
+#ptn-sidebar a.ptn-active{background:var(--ptn-pink);transform:translate(2px,2px);box-shadow:2px 2px 0 #111}
+#ptn-sidebar .ptn-foot{padding:14px;border-top:4px solid #111}
+#ptn-sidebar .ptn-foot button{background:#111;color:var(--ptn-yellow)}
+#ptn-sidebar .ptn-foot button:hover{background:var(--ptn-pink);color:#111}
+#ptn-toggle{
+  display:none;position:fixed;top:12px;left:12px;z-index:70;padding:8px 14px;cursor:pointer;
+  background:var(--ptn-yellow);color:#111;border:3px solid #111;box-shadow:4px 4px 0 #111;font:900 13px var(--ptn-font);
+}
+@media (max-width:960px){
+  html.ptn-app.ptn-has-sidebar #app{margin-left:0;padding-top:64px}
+  #ptn-sidebar{transform:translateX(-102%);transition:transform .2s}
+  html.ptn-open #ptn-sidebar{transform:none}
+  #ptn-toggle{display:block}
+}
+CSS
+}
+
+theme_write_sidebar_js() {
+  cat > "$THEME_PUB/sidebar.js" <<'JS'
+/* Neo Brutalism - sidebar + pewarnaan otomatis (tanpa build ulang frontend) */
+(function () {
+  'use strict';
+  if (window.__ptnTheme) { return; }
+  window.__ptnTheme = true;
+
+  var root = document.documentElement;
+  var sigCache = '';
+  var adminSeen = false;
+
+  function isAuth() { return location.pathname.indexOf('/auth') === 0; }
+  function syncMode() {
+    root.classList.toggle('ptn-auth', isAuth());
+    root.classList.toggle('ptn-app', !isAuth());
+  }
+  function mk(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) { e.className = cls; }
+    if (text != null) { e.textContent = text; }
+    return e;
+  }
+  function go(href) {
+    if (/^\/(admin|auth)(\/|$)/.test(href)) { location.href = href; return; }
+    if (href === location.pathname) { return; }
+    history.pushState({}, '', href);
+    window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+  }
+  function logout() {
+    var m = document.cookie.match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
+    fetch('/auth/logout', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'X-XSRF-TOKEN': m ? decodeURIComponent(m[1]) : '', 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+    }).then(function () {}, function () {}).then(function () { location.href = '/auth/login'; });
+  }
+
+  /* ------------------------------------------------ navigasi / sidebar */
+  function siteName() {
+    var l = document.getElementById('logo');
+    var t = l && l.textContent.trim();
+    return t || document.title.replace(/\s*[-|].*$/, '') || 'Panel';
+  }
+  function topBar() {
+    var l = document.getElementById('logo');
+    var bar = l && l.parentElement && l.parentElement.parentElement;
+    if (!bar || (bar.innerText || '').length > 400 || bar.querySelector('input,textarea')) { return null; }
+    return bar;
+  }
+  function icon(href, base) {
+    var k = href === base ? '' : href.slice(base.length + 1).split('/')[0];
+    return ({ '': '🖥️', files: '📁', databases: '🗄️', schedules: '⏱️', users: '👥', backups: '💾',
+      network: '🌐', startup: '🚀', settings: '⚙️', activity: '📜' })[k] || '▪️';
+  }
+  function serverNav() {
+    var m = location.pathname.match(/^\/server\/([^\/]+)/);
+    if (!m) { return { id: null, items: [], bar: null }; }
+    var base = '/server/' + m[1], groups = [];
+    [].forEach.call(document.querySelectorAll('a[href^="' + base + '"]'), function (a) {
+      if (a.closest('#ptn-sidebar')) { return; }
+      var h = a.getAttribute('href');
+      if (h !== base && h.indexOf(base + '/') !== 0) { return; }
+      var g = null;
+      groups.forEach(function (x) { if (x.p === a.parentElement) { g = x; } });
+      if (!g) { g = { p: a.parentElement, arr: [] }; groups.push(g); }
+      g.arr.push(a);
+    });
+    var best = null;
+    groups.forEach(function (g) { if (!best || g.arr.length > best.arr.length) { best = g; } });
+    if (!best || best.arr.length < 3) { return { id: m[1], items: [], bar: null }; }
+    var seen = {}, items = [];
+    best.arr.forEach(function (a) {
+      var h = a.getAttribute('href'), t = (a.textContent || '').trim();
+      if (t && !seen[h]) { seen[h] = 1; items.push({ href: h, label: t, icon: icon(h, base) }); }
+    });
+    var bar = best.p.parentElement;
+    if (!bar || (bar.innerText || '').length > 400 || bar.querySelector('input,textarea,table')) { bar = null; }
+    return { id: m[1], items: items, bar: bar };
+  }
+  function addLink(parent, it) {
+    var a = mk('a', '', '');
+    a.href = it.href;
+    a.appendChild(mk('span', '', it.icon));
+    a.appendChild(mk('span', '', it.label));
+    a.addEventListener('click', function (e) {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) { return; }
+      e.preventDefault();
+      root.classList.remove('ptn-open');
+      go(it.href);
+    });
+    parent.appendChild(a);
+  }
+  function build(name, admin, srv) {
+    var old = document.getElementById('ptn-sidebar');
+    if (old) { old.remove(); }
+    var aside = mk('aside');
+    aside.id = 'ptn-sidebar';
+    aside.appendChild(mk('div', 'ptn-brand', name));
+    var nav = mk('nav');
+    nav.appendChild(mk('div', 'ptn-label', 'Menu'));
+    var main = [
+      { href: '/', label: 'Dashboard', icon: '🏠' },
+      { href: '/account', label: 'Account', icon: '👤' },
+      { href: '/account/api', label: 'API Credentials', icon: '🔑' },
+      { href: '/account/ssh', label: 'SSH Keys', icon: '🔐' }
+    ];
+    if (admin) { main.push({ href: '/admin', label: 'Admin Panel', icon: '🛠️' }); }
+    main.forEach(function (it) { addLink(nav, it); });
+    if (srv.items.length) {
+      nav.appendChild(mk('div', 'ptn-label', 'Server'));
+      srv.items.forEach(function (it) { addLink(nav, it); });
+    }
+    aside.appendChild(nav);
+    var foot = mk('div', 'ptn-foot');
+    var out = mk('button', '', '⏻  Logout');
+    out.type = 'button';
+    out.addEventListener('click', logout);
+    foot.appendChild(out);
+    aside.appendChild(foot);
+    document.body.appendChild(aside);
+
+    if (!document.getElementById('ptn-toggle')) {
+      var t = mk('button', '', '☰ Menu');
+      t.id = 'ptn-toggle';
+      t.type = 'button';
+      t.addEventListener('click', function () { root.classList.toggle('ptn-open'); });
+      document.body.appendChild(t);
+    }
+  }
+  function markActive() {
+    var links = document.querySelectorAll('#ptn-sidebar nav a'), best = null, bestLen = -1, p = location.pathname.replace(/\/+$/, '') || '/';
+    [].forEach.call(links, function (a) {
+      a.classList.remove('ptn-active');
+      var h = a.getAttribute('href').replace(/\/+$/, '') || '/';
+      var hit = h === p || (h !== '/' && p.indexOf(h + '/') === 0);
+      if (hit && h.length > bestLen) { best = a; bestLen = h.length; }
+    });
+    if (best) { best.classList.add('ptn-active'); }
+  }
+  function render() {
+    syncMode();
+    var old = document.getElementById('ptn-sidebar');
+    if (isAuth()) {
+      if (old) { old.remove(); }
+      var tg = document.getElementById('ptn-toggle');
+      if (tg) { tg.remove(); }
+      root.classList.remove('ptn-has-sidebar');
+      return;
+    }
+    if (!document.getElementById('logo') && !old) { return; }
+    if (document.querySelector('a[href="/admin"]:not(#ptn-sidebar a)')) { adminSeen = true; }
+    var srv = serverNav(), name = siteName();
+    var sig = JSON.stringify([name, adminSeen, srv.id, srv.items]);
+    if (!old || sig !== sigCache) { build(name, adminSeen, srv); sigCache = sig; }
+    var tb = topBar();
+    if (tb) { tb.classList.add('ptn-hide'); }
+    if (srv.bar) { srv.bar.classList.add('ptn-hide'); }
+    root.classList.add('ptn-has-sidebar');
+    markActive();
+  }
+  var timer = null;
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(render, 120);
+  }
+
+  /* --------------------------------------- pewarnaan otomatis ke Neo Brutalism */
+  function parse(c) {
+    var m = c && c.match(/rgba?\(([^)]+)\)/);
+    if (!m) { return null; }
+    var p = m[1].split(/[ ,\/]+/).filter(Boolean).map(parseFloat);
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+  function lum(c) {
+    var a = [c.r, c.g, c.b].map(function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+  }
+  function sat(c) {
+    var mx = Math.max(c.r, c.g, c.b), mn = Math.min(c.r, c.g, c.b);
+    return mx === 0 ? 0 : (mx - mn) / mx;
+  }
+  var seen = new WeakSet();
+  function paint(el) {
+    if (el.nodeType !== 1 || seen.has(el)) { return; }
+    seen.add(el);
+    if (el.closest('svg,canvas,.xterm,#ptn-sidebar,#ptn-toggle,.ptn-keep,script,style,img,video,iframe')) { return; }
+    var cs = getComputedStyle(el);
+    var bg = parse(cs.backgroundColor);
+    if (bg && bg.a > 0.95) {
+      var l = lum(bg), s = sat(bg);
+      if (s < 0.28 && l < 0.5) {
+        var r = el.getBoundingClientRect();
+        var big = r.width > innerWidth * 0.85 && r.height > innerHeight * 0.5;
+        var inner = el.parentElement && el.parentElement.closest('.ptn-s1');
+        el.classList.add(big ? 'ptn-s0' : (inner ? 'ptn-s2' : 'ptn-s1'));
+      } else if (s >= 0.28) {
+        el.classList.add('ptn-accent');
+      }
+    }
+    var c = parse(cs.color);
+    if (c && lum(c) > 0.55 && !el.closest('.ptn-accent')) { el.classList.add('ptn-t'); }
+  }
+  var queue = [], qi = 0, pending = false;
+  function flush() {
+    pending = false;
+    if (isAuth()) { queue = []; qi = 0; return; }
+    var n = 0;
+    while (qi < queue.length && n < 400) { paint(queue[qi++]); n++; }
+    if (qi < queue.length) { pending = true; requestAnimationFrame(flush); } else { queue = []; qi = 0; }
+  }
+  function enqueue(node) {
+    if (node.nodeType !== 1) { return; }
+    queue.push(node);
+    var all = node.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) { queue.push(all[i]); }
+    if (!pending) { pending = true; requestAnimationFrame(flush); }
+  }
+
+  /* ------------------------------------------------------------- start */
+  ['pushState', 'replaceState'].forEach(function (k) {
+    var o = history[k];
+    history[k] = function () {
+      var r = o.apply(this, arguments);
+      window.dispatchEvent(new Event('ptn:nav'));
+      return r;
+    };
+  });
+  window.addEventListener('popstate', schedule);
+  window.addEventListener('ptn:nav', schedule);
+
+  function start() {
+    syncMode();
+    new MutationObserver(function (muts) {
+      muts.forEach(function (m) { [].forEach.call(m.addedNodes, enqueue); });
+      schedule();
+    }).observe(document.body, { childList: true, subtree: true });
+    enqueue(document.body);
+    schedule();
+  }
+  if (document.body) { start(); } else { document.addEventListener('DOMContentLoaded', start); }
+})();
+JS
+}
+
+theme_write_admin() {
+  cat > "$THEME_PUB/admin.css" <<'CSS'
+/* Neo Brutalism - panel admin (AdminLTE) */
+body.skin-blue,.skin-blue .wrapper,.skin-blue .content-wrapper,.skin-blue .right-side{
+  background-color:var(--ptn-bg)!important;font-family:var(--ptn-font)!important;color:#111;
+}
+.skin-blue .content-wrapper{
+  background-image:radial-gradient(rgba(17,17,17,.12) 1.5px,transparent 1.5px);background-size:24px 24px;
+}
+.skin-blue .main-header .logo{
+  background:#111!important;color:var(--ptn-yellow)!important;border-right:4px solid #111;
+  font-family:var(--ptn-font)!important;font-weight:900;text-transform:uppercase;letter-spacing:-.01em;
+}
+.skin-blue .main-header .navbar{background:var(--ptn-yellow)!important;border-bottom:4px solid #111}
+.skin-blue .main-header .navbar .nav>li>a,.skin-blue .main-header .navbar .sidebar-toggle{color:#111!important;font-weight:800}
+.skin-blue .main-header .navbar .nav>li>a:hover,.skin-blue .main-header .navbar .sidebar-toggle:hover{background:var(--ptn-pink)!important}
+.skin-blue .main-sidebar,.skin-blue .left-side{background:#fff!important;border-right:4px solid #111}
+.skin-blue .sidebar-menu>li.header{background:#111!important;color:var(--ptn-yellow)!important;font-weight:900;letter-spacing:.14em}
+.skin-blue .sidebar-menu>li>a{
+  color:#111!important;font-weight:800;text-transform:uppercase;font-size:12px;
+  border:3px solid transparent;margin:3px 10px;border-radius:0;
+}
+.skin-blue .sidebar-menu>li:hover>a,.skin-blue .sidebar-menu>li.active>a{
+  background:var(--ptn-pink)!important;color:#111!important;border:3px solid #111;box-shadow:4px 4px 0 #111;
+}
+.skin-blue .sidebar-menu>li>.treeview-menu{background:var(--ptn-bg)!important;margin:0 10px;border:3px solid #111;border-top:0}
+.skin-blue .sidebar-menu .treeview-menu>li>a{color:#111!important;font-weight:700}
+.skin-blue .sidebar-menu .treeview-menu>li.active>a,.skin-blue .sidebar-menu .treeview-menu>li>a:hover{background:var(--ptn-yellow)!important;color:#111!important}
+.content-header>h1{font-weight:900;text-transform:uppercase;letter-spacing:-.02em}
+.content-header>h1>small{color:#111;font-weight:700}
+.content-header>.breadcrumb>li>a{color:#111}
+.box,.small-box,.info-box{
+  background:#fff!important;border:3px solid #111!important;border-top:3px solid #111!important;
+  border-radius:0!important;box-shadow:6px 6px 0 #111!important;
+}
+.box-header{border-bottom:3px solid #111;background:var(--ptn-yellow)}
+.box-header .box-title{font-weight:900;text-transform:uppercase;color:#111}
+.box-footer{border-top:3px solid #111;background:var(--ptn-bg)}
+.small-box>.small-box-footer{background:#111!important;color:var(--ptn-yellow)!important;font-weight:800}
+.btn{
+  border:3px solid #111!important;border-radius:0!important;box-shadow:3px 3px 0 #111;font-weight:800;text-transform:uppercase;
+  transition:transform .08s,box-shadow .08s;
+}
+.btn:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111}
+.btn:active{transform:translate(2px,2px);box-shadow:none}
+.btn-primary{background:var(--ptn-blue)!important;color:#fff!important}
+.btn-success{background:var(--ptn-green)!important;color:#111!important}
+.btn-danger{background:var(--ptn-pink)!important;color:#111!important}
+.btn-warning{background:var(--ptn-orange)!important;color:#111!important}
+.btn-default,.btn-info{background:#fff!important;color:#111!important}
+.form-control,.select2-container--default .select2-selection--single,.select2-container--default .select2-selection--multiple{
+  border:3px solid #111!important;border-radius:0!important;box-shadow:none!important;background:#fff;color:#111;font-weight:600;
+}
+.form-control:focus{background:#FFFBD6;box-shadow:4px 4px 0 #111!important}
+.input-group-addon{border:3px solid #111!important;border-radius:0!important;background:var(--ptn-yellow);color:#111;font-weight:800}
+.table>thead>tr>th{background:#111;color:var(--ptn-yellow);border-bottom:3px solid #111;text-transform:uppercase;font-weight:900;font-size:12px;letter-spacing:.06em}
+.table>tbody>tr>td{border-top:2px solid #111!important}
+.table-hover>tbody>tr:hover{background:var(--ptn-yellow)!important}
+.label,.badge{border:2px solid #111;border-radius:0!important;color:#111!important;font-weight:800}
+.label-success{background:var(--ptn-green)!important}.label-danger{background:var(--ptn-pink)!important}
+.label-warning{background:var(--ptn-orange)!important}.label-primary,.label-info{background:var(--ptn-blue)!important;color:#fff!important}
+.label-default{background:#fff!important}
+.callout,.alert{border:3px solid #111!important;border-left-width:10px!important;border-radius:0!important;color:#111!important;font-weight:600}
+.alert-success,.callout-success{background:var(--ptn-green)!important}
+.alert-danger,.callout-danger{background:var(--ptn-pink)!important}
+.alert-warning,.callout-warning{background:var(--ptn-orange)!important}
+.alert-info,.callout-info{background:var(--ptn-blue)!important;color:#fff!important}
+.modal-content{border:4px solid #111!important;border-radius:0!important;box-shadow:10px 10px 0 #111!important}
+.modal-header{background:var(--ptn-yellow);border-bottom:3px solid #111}
+.modal-footer{border-top:3px solid #111;background:var(--ptn-bg)}
+.nav-tabs-custom{border:3px solid #111;border-radius:0;box-shadow:6px 6px 0 #111}
+.nav-tabs-custom>.nav-tabs>li.active{border-top-color:#111}
+.nav-tabs-custom>.nav-tabs>li>a{font-weight:800;text-transform:uppercase;color:#111}
+.pagination>li>a,.pagination>li>span{border:2px solid #111!important;border-radius:0!important;color:#111;font-weight:800}
+.pagination>.active>a,.pagination>.active>span{background:var(--ptn-pink)!important;color:#111!important}
+.main-footer{background:#111!important;color:var(--ptn-yellow)!important;border-top:4px solid #111}
+.main-footer a{color:var(--ptn-pink)!important}
+CSS
+}
+
+theme_begin() {
+  mkdir -p "$THEME_PUB" "$THEME_DIR"
+  theme_write_base
+  theme_write_partial
+  theme_inject_all
+}
+theme_end() {
+  chmod -R a+rX "$THEME_PUB" 2>/dev/null || true
+  chown -R "$OWNER:$OWNER" "$THEME_PUB" "$THEME_DIR" 2>/dev/null || true
+  post_steps
+  info "Selesai. Tekan Ctrl+F5 di browser untuk memuat tema baru."
+}
+
+install_theme_login() {
+  theme_begin; theme_write_login
+  theme_save true "$(theme_flag app)" "$(theme_flag admin)"
+  theme_end; info "Tampilan Login terpasang."
+}
+install_theme_app() {
+  theme_begin; theme_write_app; theme_write_sidebar_js
+  theme_save "$(theme_flag login)" true "$(theme_flag admin)"
+  theme_end; info "Tampilan Dashboard Server (Dashboard Utama + sidebar) terpasang."
+}
+install_theme_admin() {
+  theme_begin; theme_write_admin
+  theme_save "$(theme_flag login)" "$(theme_flag app)" true
+  theme_end; info "Tampilan Dashboard Admin terpasang."
+}
+
+theme_menu() {
+  local t
+  while true; do
+    echo "---------- Install Theme (Neo Brutalism) ----------"
+    echo " 1) Install Tampilan Login"
+    echo " 2) Install Tampilan Dashboard Server (Dashboard Utama)"
+    echo " 3) Install Tampilan Dashboard Admin"
+    echo " 0) Selesai"
+    read -r -p "Pilih [0-3]: " t || true
+    case "${t:-0}" in
+      1) install_theme_login ;;
+      2) install_theme_app ;;
+      3) install_theme_admin ;;
+      *) break ;;
+    esac
+  done
+}
+
+theme_uninstall() {
+  [[ -f "$THEME_CFG" || -d "$THEME_PUB" ]] || die "Tema belum terpasang."
+  local f
+  for f in "$THEME_USER_VIEW" "$THEME_ADMIN_VIEW"; do
+    if [[ -f "$f" ]]; then
+      perl -0pi -e 's/[ \t]*\@includeIf\("partials\.protect-theme"[^\n]*\n//g' "$f"
+    fi
+  done
+  rm -rf "$THEME_PUB" "$THEME_DIR" "$THEME_PARTIAL"
+  post_steps
+  info "Tema dihapus, tampilan bawaan panel dikembalikan."
+}
+
 # ------------------------------------------------------------------- menu ---
 if [[ "$ACTION" == "menu" ]]; then
   echo "========== Pterodactyl Protect =========="
   echo " 1) Install Protect"
   echo " 2) Uninstall Protect"
-  echo " 0) Keluar"
-  read -r -p "Pilih [0-2]: " choice || true
+  echo " 3) Install Theme   (1. Login, 2. Dashboard Server/Utama, 3. Dashboard Admin)"
+  echo " 4) Uninstall Theme"
+  echo " 0) Exit"
+  read -r -p "Pilih [0-4]: " choice || true
   case "${choice:-0}" in
     1) ACTION="install" ;;
     2) ACTION="uninstall" ;;
+    3) ACTION="theme" ;;
+    4) ACTION="theme-uninstall" ;;
     *) exit 0 ;;
   esac
 fi
 case "$ACTION" in
-  install|1)   ACTION="install" ;;
-  uninstall|2) ACTION="uninstall" ;;
-  *) die "Pilihan tidak dikenal: $ACTION (pakai: install | uninstall)" ;;
+  install|1)         ACTION="install" ;;
+  uninstall|2)       ACTION="uninstall" ;;
+  theme|3)           ACTION="theme" ;;
+  theme-uninstall|4) ACTION="theme-uninstall" ;;
+  theme-login|theme-app|theme-admin|theme-all) ;;
+  *) die "Pilihan tidak dikenal: $ACTION (pakai: install | uninstall | theme | theme-uninstall | theme-login | theme-app | theme-admin | theme-all)" ;;
 esac
-[[ "$ACTION" == "uninstall" ]] && uninstall_protect
+case "$ACTION" in
+  uninstall)       uninstall_protect ;;
+  theme)           theme_menu; exit 0 ;;
+  theme-login)     install_theme_login; exit 0 ;;
+  theme-app)       install_theme_app; exit 0 ;;
+  theme-admin)     install_theme_admin; exit 0 ;;
+  theme-all)       install_theme_login; install_theme_app; install_theme_admin; exit 0 ;;
+  theme-uninstall) theme_uninstall; exit 0 ;;
+esac
 
 # ------------------------------------------------------------- input config ---
 SUPPORT_URL="${SUPPORT_URL:-}"
@@ -182,11 +768,17 @@ PANEL_IPS="$(detect_panel_ips)"
 info "IP panel terdeteksi (satu-satunya IP yang boleh memakai Application API):"
 echo "${PANEL_IPS:-  (tidak terdeteksi)}" | sed 's/^/    /'
 
-if [[ -z "$PANEL_IPS" ]]; then
-  warn "IP panel tidak terdeteksi otomatis."
-  read -r -p "Masukkan IP VPS panel (IPv4/IPv6, boleh ipv4:port): " manual_ip || true
-  PANEL_IPS="$(normalize_ip "${manual_ip:-}")" || die "IP tidak valid."
+# Setelah link support: minta kirim IP VPS panel (Enter = pakai IP publik yang terdeteksi)
+DEFAULT_IP="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+[[ -z "$DEFAULT_IP" ]] && DEFAULT_IP="$(head -1 <<< "$PANEL_IPS")"
+VPS_IP_INPUT="${VPS_IP:-}"
+if [[ -z "$VPS_IP_INPUT" ]]; then
+  read -r -p "Kirim IP VPS panel (IPv4/IPv6, boleh ipv4:port)${DEFAULT_IP:+ [Enter = $DEFAULT_IP]}: " VPS_IP_INPUT || true
+  VPS_IP_INPUT="${VPS_IP_INPUT:-$DEFAULT_IP}"
 fi
+VPS_IP="$(normalize_ip "$VPS_IP_INPUT")" || die "IP VPS tidak valid: '$VPS_IP_INPUT'"
+PANEL_IPS="$(printf '%s\n%s\n' "$PANEL_IPS" "$VPS_IP" | sed '/^$/d' | sort -u)"
+info "IP VPS panel terdaftar: $VPS_IP"
 
 # IP tambahan (opsional, TIDAK ditanyakan): ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"
 CLEAN_IPS=()
