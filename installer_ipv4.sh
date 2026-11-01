@@ -759,34 +759,28 @@ if [[ -n "$SUPPORT_URL" && ! "$SUPPORT_URL" =~ $url_re ]]; then
   die "Link support tidak valid (harus diawali http:// atau https://)."
 fi
 
-# IP milik VPS panel (tidak boleh akses Application API)
-detect_panel_ips() {
-  {
-    hostname -I 2>/dev/null | tr ' ' '\n' || true
-    curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true
-    echo
-    local host=""
-    if [[ -f "$PANEL_DIR/.env" ]]; then
-      host="$(grep -E '^APP_URL=' "$PANEL_DIR/.env" | head -1 | cut -d= -f2- | tr -d "\"'" | sed -E 's#^https?://##; s#[/:].*$##' || true)"
-    fi
-    [[ -n "$host" ]] && { getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' || true; }
-  } | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
+# IP internal / private / loopback (172.x.x.x docker, 10.x, 192.168.x, 127.x, fc00::/7, dll)
+is_private_ip() {
+  local ip="${1,,}"
+  [[ "$ip" =~ ^(0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.) ]] && return 0
+  [[ "$ip" == "::1" || "$ip" == "::" || "$ip" =~ ^(fc|fd|fe80) ]] && return 0
+  return 1
 }
-PANEL_IPS="$(detect_panel_ips)"
-info "IP panel terdeteksi (satu-satunya IP yang boleh memakai Application API):"
-echo "${PANEL_IPS:-  (tidak terdeteksi)}" | sed 's/^/    /'
 
-# Setelah link support: minta kirim IP VPS panel (Enter = pakai IP publik yang terdeteksi)
+# IP VPS panel = HANYA IP yang dikirim di sini. IP internal (172.x.x.x dari docker/Wings, dll)
+# TIDAK ikut dideteksi / didaftarkan. Enter = pakai IP publik hasil deteksi api.ipify.org.
 DEFAULT_IP="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-[[ -z "$DEFAULT_IP" ]] && DEFAULT_IP="$(head -1 <<< "$PANEL_IPS")"
 VPS_IP_INPUT="${VPS_IP:-}"
 if [[ -z "$VPS_IP_INPUT" ]]; then
   read -r -p "Kirim IP VPS panel (IPv4/IPv6, boleh ipv4:port)${DEFAULT_IP:+ [Enter = $DEFAULT_IP]}: " VPS_IP_INPUT || true
   VPS_IP_INPUT="${VPS_IP_INPUT:-$DEFAULT_IP}"
 fi
 VPS_IP="$(normalize_ip "$VPS_IP_INPUT")" || die "IP VPS tidak valid: '$VPS_IP_INPUT'"
-PANEL_IPS="$(printf '%s\n%s\n' "$PANEL_IPS" "$VPS_IP" | sed '/^$/d' | sort -u)"
-info "IP VPS panel terdaftar: $VPS_IP"
+if is_private_ip "$VPS_IP"; then
+  die "IP $VPS_IP adalah IP internal/private (bukan IP VPS publik). Kirim IP publik VPS panel."
+fi
+PANEL_IPS="$VPS_IP"
+info "IP VPS panel terdaftar (satu-satunya IP yang boleh memakai Application API): $VPS_IP"
 
 # IP tambahan (opsional, TIDAK ditanyakan): ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"
 CLEAN_IPS=()
@@ -942,25 +936,22 @@ class PanelProtect
             return;
         }
 
-        $ip = strtolower((string) $request->ip());
+        $ip = self::clientIp($request);
 
-        // Application API (endpoint dokumentasi API) hanya bisa dipakai bila dijalankan dari
-        // VPS panel itu sendiri (bot / script yang jalan di VPS yang sama dengan panel).
-        // Request dari server lain ditolak. Saklar darurat: buat file
-        // storage/protect/disable_ip_lock untuk mematikan batas ini.
+        // Application API hanya bisa dipakai dari IP VPS yang dikirim saat install (panel_ips.txt)
+        // + IP tambahan opsional (allowed_ips.txt). Alamat internal (172.x.x.x docker, SERVER_ADDR,
+        // localhost) TIDAK otomatis diizinkan. Request dari server lain ditolak.
+        // Saklar darurat: buat file storage/protect/disable_ip_lock untuk mematikan batas ini.
         if (!is_file(storage_path('protect/disable_ip_lock'))) {
-            $allowed = array_merge(
+            $allowed = array_map([self::class, 'norm'], array_merge(
                 self::lines('panel_ips.txt'),
-                self::lines('allowed_ips.txt'),
-                ['127.0.0.1', '::1']
-            );
-            // Request ke IP publik VPS dari VPS itu sendiri: alamat sumber = alamat tujuan.
-            $serverAddr = strtolower((string) $request->server('SERVER_ADDR'));
-            if ($serverAddr !== '') {
-                $allowed[] = $serverAddr;
-            }
+                self::lines('allowed_ips.txt')
+            ));
             if (!in_array($ip, $allowed, true)) {
-                self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').');
+                $hint = self::isPrivate($ip)
+                    ? ' Proxy belum meneruskan IP asli (lihat storage/protect/trusted_proxies.txt).'
+                    : '';
+                self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').' . $hint);
             }
         }
 
@@ -994,6 +985,67 @@ class PanelProtect
         if ($section === 'users' && (int) $target === self::OWNER_ID && $method !== 'GET') {
             self::deny($request, 'Akun owner panel tidak boleh diedit atau dihapus.');
         }
+    }
+
+    /** True jika IP internal / private / loopback / reserved (mis. 172.x.x.x, 10.x, 127.x, fc00::/7). */
+    private static function isPrivate(string $ip): bool
+    {
+        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+    }
+
+    /** Rapikan IP: buang port & kurung, ::ffff:1.2.3.4 jadi IPv4, IPv6 jadi bentuk baku. */
+    private static function norm(string $ip): string
+    {
+        $ip = strtolower(trim($ip));
+        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $ip, $m)) {
+            $ip = $m[1];
+        } elseif (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $ip, $m)) {
+            $ip = $m[1];
+        }
+        if (preg_match('/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/', $ip, $m)) {
+            $ip = $m[1];
+        }
+        $bin = @inet_pton($ip);
+
+        return $bin === false ? $ip : (string) inet_ntop($bin);
+    }
+
+    /**
+     * IP asli pengirim. Jika IP yang terbaca masih internal (mis. 172.x.x.x) karena ada proxy/tunnel
+     * lokal, ambil IP asli dari header proxy. Header HANYA dipercaya bila koneksi langsung datang
+     * dari proxy tepercaya: localhost atau IP di storage/protect/trusted_proxies.txt (satu per baris).
+     */
+    private static function clientIp(Request $request): string
+    {
+        $ip = self::norm((string) $request->ip());
+        if (!self::isPrivate($ip)) {
+            return $ip;
+        }
+
+        $peer = self::norm((string) $request->server('REMOTE_ADDR'));
+        $trusted = array_map([self::class, 'norm'], array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')));
+        if (!in_array($peer, $trusted, true)) {
+            return $ip;
+        }
+
+        $cands = [];
+        foreach (['CF-Connecting-IP', 'X-Real-IP'] as $h) {
+            $v = trim((string) $request->header($h));
+            if ($v !== '') {
+                $cands[] = $v;
+            }
+        }
+        // X-Forwarded-For: baca dari kanan (entri paling kanan ditambahkan proxy kita sendiri).
+        $cands = array_merge($cands, array_reverse(explode(',', (string) $request->header('X-Forwarded-For'))));
+
+        foreach ($cands as $c) {
+            $c = self::norm($c);
+            if ($c !== '' && !self::isPrivate($c)) {
+                return $c;
+            }
+        }
+
+        return $ip;
     }
 
     private static function lines(string $file): array
@@ -1272,7 +1324,9 @@ cat <<EOF
 
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
-  - Application API   : hanya dari VPS panel ini (IP: $PROTECT_DIR/panel_ips.txt, localhost)
+  - Application API   : hanya dari IP VPS yang dikirim: $VPS_IP (daftar: $PROTECT_DIR/panel_ips.txt)
+                        IP internal (172.x.x.x, localhost) TIDAK otomatis diizinkan
+  - Proxy lokal       : $PROTECT_DIR/trusted_proxies.txt  (opsional, IP proxy yang header IP aslinya dipercaya)
   - Matikan batas IP  : touch $PROTECT_DIR/disable_ip_lock  (hapus file untuk menyalakan lagi)
   - Role admin        : hanya user ID 1 yang bisa membuat / menjadikan user admin
   - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP per baris)
