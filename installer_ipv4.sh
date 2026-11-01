@@ -7,7 +7,7 @@
 #     bash protect-pterodactyl.sh uninstall    -> langsung uninstall (wajib isi IP VPS)
 #  Format IP: IPv4, IPv6, atau IPv4:port / [IPv6]:port (port acak diabaikan)
 #  Opsional (env): PANEL_DIR=/var/www/pterodactyl SUPPORT_URL=https://t.me/xxx
-#                  ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"  UNINSTALL_IP="1.2.3.4"
+#                  ALLOWED_IPS="IP_TAMBAHAN"(opsional)  UNINSTALL_IP="1.2.3.4"
 # =============================================================================
 set -euo pipefail
 
@@ -174,26 +174,24 @@ detect_panel_ips() {
   } | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
 }
 PANEL_IPS="$(detect_panel_ips)"
-info "IP panel terdeteksi (akan DIBLOKIR dari Application API):"
+info "IP panel terdeteksi (satu-satunya IP yang boleh akses Application API):"
 echo "${PANEL_IPS:-  (tidak terdeteksi)}" | sed 's/^/    /'
 
-ALLOWED_IPS="${ALLOWED_IPS:-}"
-if [[ -z "$ALLOWED_IPS" ]]; then
-  read -r -p "IP VPS yang boleh akses Application API (IPv4/IPv6, boleh ipv4:port, pisahkan koma): " ALLOWED_IPS || true
+if [[ -z "$PANEL_IPS" ]]; then
+  warn "IP panel tidak terdeteksi otomatis."
+  read -r -p "Masukkan IP VPS panel (IPv4/IPv6, boleh ipv4:port): " manual_ip || true
+  PANEL_IPS="$(normalize_ip "${manual_ip:-}")" || die "IP tidak valid. Tanpa IP panel, Application API akan terkunci."
 fi
 
+# IP tambahan (opsional, TIDAK ditanyakan): ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"
 CLEAN_IPS=()
-IFS=', ' read -r -a _ips <<< "$ALLOWED_IPS"
+IFS=', ' read -r -a _ips <<< "${ALLOWED_IPS:-}"
 for raw in "${_ips[@]:-}"; do
   [[ -z "$raw" ]] && continue
   nip="$(normalize_ip "$raw")" || { warn "IP '$raw' tidak valid, dilewati."; continue; }
-  [[ "${raw,,}" != "$nip" ]] && info "Port pada '$raw' diabaikan (port sumber koneksi acak), yang dicek hanya IP: $nip"
-  if grep -qxF "$nip" <<< "$PANEL_IPS"; then
-    warn "IP $nip adalah IP panel, dilewati."; continue
-  fi
+  grep -qxF "$nip" <<< "$PANEL_IPS" && continue
   CLEAN_IPS+=("$nip")
 done
-[[ ${#CLEAN_IPS[@]} -gt 0 ]] || warn "Whitelist IP kosong: hanya IP panel yang diblokir, IP lain tetap boleh."
 
 mkdir -p "$PROTECT_DIR" "$BK"
 printf '%s\n' "${CLEAN_IPS[@]:-}" | sed '/^$/d' | sort -u > "$PROTECT_DIR/allowed_ips.txt"
@@ -209,6 +207,7 @@ namespace Pterodactyl\Http\Middleware\Protect;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Pterodactyl\Models\ApiKey;
 use Pterodactyl\Models\Server;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
@@ -224,16 +223,29 @@ class PanelProtect
     public static function admin(Request $request): void
     {
         $user = $request->user();
-        if (!$user || (int) $user->id === self::OWNER_ID) {
+        if (!$user) {
             return;
         }
 
         $seg = $request->segments(); // [admin, section, ...]
+
+        // Berlaku untuk semua admin (termasuk owner): key ptla milik admin lain tidak boleh disentuh.
+        self::guardApiKeys($request, $user, $seg);
+
+        if ((int) $user->id === self::OWNER_ID) {
+            return;
+        }
+
         $section = $seg[1] ?? '';
         $method = strtoupper($request->method());
 
         if (in_array($section, self::OWNER_ONLY_SECTIONS, true)) {
             self::deny($request, 'Halaman ini hanya bisa diakses oleh owner panel.');
+        }
+
+        // Daftar semua server (milik user) ditolak untuk admin selain owner.
+        if ($section === 'servers' && count($seg) === 2) {
+            self::deny($request, 'Daftar server milik user hanya bisa dilihat oleh owner panel.');
         }
 
         // Server orang lain: tidak boleh dibuka / diubah / dihapus.
@@ -251,6 +263,22 @@ class PanelProtect
         }
     }
 
+    /** Application API key (ptla): hanya pemilik key yang boleh mencabut/mengelolanya. */
+    private static function guardApiKeys(Request $request, $user, array $seg): void
+    {
+        if (($seg[1] ?? '') !== 'api' || ($seg[2] ?? '') !== 'revoke' || empty($seg[3])) {
+            return;
+        }
+
+        $id = (string) $seg[3];
+        $ids = array_values(array_unique([$id, preg_replace('/^ptl[ac]_/', '', $id)]));
+        $key = ApiKey::query()->whereIn('identifier', $ids)->first();
+
+        if ($key && (int) $key->user_id !== (int) $user->id) {
+            self::deny($request, 'Application API key milik admin lain tidak bisa diakses.');
+        }
+    }
+
     /** Dipanggil dari AuthenticateApplicationUser (semua /api/application). */
     public static function api(Request $request): void
     {
@@ -260,17 +288,17 @@ class PanelProtect
             return;
         }
 
-        $ip = (string) $request->ip();
+        $ip = strtolower((string) $request->ip());
 
-        // IP VPS panel sendiri tidak boleh akses Application API.
-        if (in_array($ip, self::lines('panel_ips.txt'), true)) {
-            self::deny($request, 'IP server panel tidak diizinkan mengakses Application API.');
-        }
-
-        // Hanya IP whitelist (jika diisi).
-        $allowed = self::lines('allowed_ips.txt');
-        if (!empty($allowed) && !in_array($ip, $allowed, true)) {
-            self::deny($request, 'IP kamu tidak di-whitelist untuk Application API.');
+        // Application API hanya boleh dipanggil dari VPS panel sendiri
+        // (+ IP tambahan opsional di allowed_ips.txt). IP lain ditolak.
+        $allowed = array_merge(
+            self::lines('panel_ips.txt'),
+            self::lines('allowed_ips.txt'),
+            ['127.0.0.1', '::1']
+        );
+        if (!in_array($ip, $allowed, true)) {
+            self::deny($request, 'Application API hanya bisa diakses dari server panel.');
         }
 
         // Pemilik API key harus admin panel / owner.
@@ -287,26 +315,15 @@ class PanelProtect
             return;
         }
 
-        // Admin biasa: akses terbatas.
+        // Admin biasa: semua endpoint API tetap terbuka (users, servers, nodes, include=servers, dll).
+        // Satu-satunya batasan: akun owner (id 1) tidak boleh diedit / dihapus.
         $seg = $request->segments(); // [api, application, section, id, ...]
         $section = $seg[2] ?? '';
         $target = $seg[3] ?? null;
         $method = strtoupper($request->method());
 
-        if (in_array($section, self::OWNER_ONLY_SECTIONS, true)) {
-            self::deny($request, 'Endpoint ini hanya untuk owner panel.');
-        }
-
         if ($section === 'users' && (int) $target === self::OWNER_ID && $method !== 'GET') {
             self::deny($request, 'Akun owner panel tidak boleh diedit atau dihapus.');
-        }
-
-        // Create (POST /servers, POST /users) tetap boleh; ubah/hapus hanya server milik sendiri.
-        if ($section === 'servers' && $target !== null && ctype_digit((string) $target) && $method !== 'GET') {
-            $server = Server::query()->find((int) $target);
-            if ($server && (int) $server->owner_id !== (int) $user->id) {
-                self::deny($request, 'Kamu tidak boleh mengubah atau menghapus server milik orang lain.');
-            }
         }
     }
 
@@ -318,7 +335,7 @@ class PanelProtect
         }
         $rows = file($path, FILE_IGNORE_NEW_LINES) ?: [];
 
-        return array_values(array_filter(array_map('trim', $rows), fn ($l) => $l !== '' && $l[0] !== '#'));
+        return array_values(array_filter(array_map(fn ($l) => strtolower(trim($l)), $rows), fn ($l) => $l !== '' && $l[0] !== '#'));
     }
 
     private static function deny(Request $request, string $message): void
@@ -371,18 +388,12 @@ if [[ -z "$API_MW" ]]; then
 fi
 patch_handle_start "$API_MW" '\Pterodactyl\Http\Middleware\Protect\PanelProtect::api($request);'
 
-# ------------------------- 3. daftar server admin: hanya tampil milik sendiri ---
-SRV="$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php"
-if [[ -f "$SRV" ]]; then
-  if grep -q 'auth()->id() !== 1' "$SRV"; then
-    info "Sudah dipatch: daftar server admin"
-  elif [[ "$(grep -c 'QueryBuilder::for(Server::query()' "$SRV")" == "1" ]]; then
-    backup "$SRV"
-    perl -0pi -e 's/(QueryBuilder::for\(Server::query\(\))/${1}->when((int) auth()->id() !== 1, fn (\$q) => \$q->where("owner_id", auth()->id()))/' "$SRV"
-    info "Patch: daftar server admin (non-owner hanya melihat servernya sendiri)"
-  else
-    warn "Pola daftar server tidak cocok, dilewati (akses detail server tetap diblokir middleware)."
-  fi
+# ------------- 3. daftar Application API key (ptla) hanya milik admin sendiri ---
+KEYREPO="$PANEL_DIR/app/Repositories/Eloquent/ApiKeyRepository.php"
+if [[ -f "$KEYREPO" ]] && awk '/function getApplicationKeys/,/^    }/' "$KEYREPO" | grep -q 'user_id'; then
+  info "Daftar Application API key di /admin/api sudah dibatasi per admin (hanya key sendiri)"
+else
+  warn "Tidak bisa memastikan daftar key di /admin/api dibatasi per admin, cek $(rel_of "$KEYREPO")"
 fi
 
 # --------------------------------------------- 4. notifikasi welcome (toast) ---
@@ -392,17 +403,19 @@ write_file "$PANEL_DIR/resources/views/partials/protect-welcome.blade.php" <<'BL
 @php
     $__ptCfg = json_decode((string) @file_get_contents(storage_path('protect/config.json')), true) ?: [];
     $__ptSupport = $__ptCfg['support_url'] ?? '';
-    $__ptKey = 'ptw_' . substr(md5(session()->getId()), 0, 10);
+    $__ptArea = in_array($area ?? 'user', ['user', 'admin'], true) ? ($area ?? 'user') : 'user';
+    $__ptKey = 'ptw_' . $__ptArea . '_' . substr(md5(session()->getId()), 0, 10);
 @endphp
 <script>
 (function () {
     var key = @json($__ptKey);
+    var area = @json($__ptArea);
     var name = @json((string) Auth::user()->username);
     var support = @json($__ptSupport);
     try {
         if (localStorage.getItem(key)) { return; }
         Object.keys(localStorage).forEach(function (k) {
-            if (k.indexOf('ptw_') === 0) { localStorage.removeItem(k); }
+            if (k.indexOf('ptw_' + area + '_') === 0) { localStorage.removeItem(k); }
         });
         localStorage.setItem(key, '1');
     } catch (e) { return; }
@@ -451,16 +464,20 @@ write_file "$PANEL_DIR/resources/views/partials/protect-welcome.blade.php" <<'BL
 @endauth
 BLADE
 
-inject_before_body() {
-  local f="$1"
-  [[ -f "$f" ]] || { warn "Tidak ditemukan: $(rel_of "$f") (dilewati)"; return; }
-  if grep -q 'protect-welcome' "$f"; then info "Sudah dipatch: $(rel_of "$f")"; return; fi
+inject_before_body() { # file, area (user|admin)
+  local f="$1" area="$2"
+  [[ -f "$f" ]] || { warn "Tidak ditemukan: $(rel_of "$f") (dilewati)"; return 1; }
+  if grep -q 'protect-welcome' "$f"; then info "Sudah dipatch: $(rel_of "$f")"; return 0; fi
   backup "$f"
-  perl -0pi -e 's#</body>#\@includeIf("partials.protect-welcome")\n</body>#' "$f"
-  grep -q 'protect-welcome' "$f" && info "Patch: $(rel_of "$f")" || warn "Tag </body> tidak ditemukan di $(rel_of "$f")"
+  AREA="$area" perl -0pi -e 's#</body>#\@includeIf("partials.protect-welcome", ["area" => "$ENV{AREA}"])\n</body>#' "$f"
+  if grep -q 'protect-welcome' "$f"; then info "Patch ($area): $(rel_of "$f")"; return 0; fi
+  warn "Tag </body> tidak ditemukan di $(rel_of "$f")"; return 1
 }
-inject_before_body "$PANEL_DIR/resources/views/templates/base/core.blade.php"
-inject_before_body "$PANEL_DIR/resources/views/layouts/admin.blade.php"
+# Dashboard user (React app) -> fallback ke wrapper kalau core tidak punya </body>
+inject_before_body "$PANEL_DIR/resources/views/templates/base/core.blade.php" user \
+  || inject_before_body "$PANEL_DIR/resources/views/templates/wrapper.blade.php" user || true
+# Area admin
+inject_before_body "$PANEL_DIR/resources/views/layouts/admin.blade.php" admin || true
 
 # ----------------------------------------------- 5. halaman error + tombol back ---
 info "Membuat halaman error (403, 404, 419, 429, 500, 503)"
@@ -536,8 +553,7 @@ bad=0
 for f in \
   "$PANEL_DIR/app/Http/Middleware/Protect/PanelProtect.php" \
   "$PANEL_DIR/app/Http/Middleware/AdminAuthenticate.php" \
-  "$API_MW" \
-  "$SRV"; do
+  "$API_MW"; do
   [[ -f "$f" ]] || continue
   php -l "$f" >/dev/null 2>&1 || { warn "Syntax error: $(rel_of "$f")"; bad=1; }
 done
@@ -553,8 +569,8 @@ cat <<EOF
 
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
-  - Whitelist IP API  : $PROTECT_DIR/allowed_ips.txt  (satu IP per baris)
-  - IP panel (diblokir): $PROTECT_DIR/panel_ips.txt
+  - Application API   : hanya dari IP VPS panel ($PROTECT_DIR/panel_ips.txt)
+  - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP per baris)
   - Support URL       : $PROTECT_DIR/config.json
   - Log penolakan     : storage/logs/laravel-*.log  (cari "[protect]")
   - Batalkan          : bash $0 uninstall  (wajib isi IP VPS)
