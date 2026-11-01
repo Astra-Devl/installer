@@ -254,6 +254,12 @@ class PanelProtect
     /** Dipanggil dari AuthenticateApplicationUser (semua /api/application). */
     public static function api(Request $request): void
     {
+        // Middleware ini bisa ikut jalan di Client API; proteksi hanya untuk /api/application.
+        $path = $request->segments();
+        if (($path[0] ?? '') !== 'api' || ($path[1] ?? '') !== 'application') {
+            return;
+        }
+
         $ip = (string) $request->ip();
 
         // IP VPS panel sendiri tidak boleh akses Application API.
@@ -269,6 +275,10 @@ class PanelProtect
 
         // Pemilik API key harus admin panel / owner.
         $user = $request->user();
+        if (!$user) {
+            $apiKey = $request->attributes->get('api_key');
+            $user = $apiKey ? $apiKey->user : null;
+        }
         if (!$user || !$user->root_admin) {
             self::deny($request, 'Hanya admin panel yang boleh memakai Application API.');
         }
@@ -338,8 +348,28 @@ patch_before_return() { # file, php-call
 
 patch_before_return "$PANEL_DIR/app/Http/Middleware/AdminAuthenticate.php" \
   '\Pterodactyl\Http\Middleware\Protect\PanelProtect::admin($request);'
-patch_before_return "$PANEL_DIR/app/Http/Middleware/Api/AuthenticateApplicationUser.php" \
-  '\Pterodactyl\Http\Middleware\Protect\PanelProtect::api($request);'
+patch_handle_start() { # file, php-call (disisipkan di awal method handle)
+  local f="$1" call="$2"
+  if grep -q 'PanelProtect' "$f"; then info "Sudah dipatch: $(rel_of "$f")"; return; fi
+  backup "$f"
+  CALL="$call" perl -0pi -e 's/(public function handle\([^)]*\)[^{]*\{)/$1."\n        ".$ENV{CALL}/e' "$f"
+  grep -q 'PanelProtect' "$f" || die "Gagal patch $(rel_of "$f")"
+  info "Patch: $(rel_of "$f")"
+}
+
+API_MW=""
+for cand in \
+  app/Http/Middleware/Api/AuthenticateApplicationUser.php \
+  app/Http/Middleware/Api/AuthenticateIPAccess.php; do
+  if [[ -f "$PANEL_DIR/$cand" ]] && grep -q 'public function handle' "$PANEL_DIR/$cand"; then
+    API_MW="$PANEL_DIR/$cand"; break
+  fi
+done
+if [[ -z "$API_MW" ]]; then
+  warn "Isi folder app/Http/Middleware/Api:"; ls "$PANEL_DIR/app/Http/Middleware/Api" 2>/dev/null | sed 's/^/    /' || true
+  die "Middleware Application API tidak ditemukan (versi panel tidak didukung?)"
+fi
+patch_handle_start "$API_MW" '\Pterodactyl\Http\Middleware\Protect\PanelProtect::api($request);'
 
 # ------------------------- 3. daftar server admin: hanya tampil milik sendiri ---
 SRV="$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php"
@@ -506,7 +536,7 @@ bad=0
 for f in \
   "$PANEL_DIR/app/Http/Middleware/Protect/PanelProtect.php" \
   "$PANEL_DIR/app/Http/Middleware/AdminAuthenticate.php" \
-  "$PANEL_DIR/app/Http/Middleware/Api/AuthenticateApplicationUser.php" \
+  "$API_MW" \
   "$SRV"; do
   [[ -f "$f" ]] || continue
   php -l "$f" >/dev/null 2>&1 || { warn "Syntax error: $(rel_of "$f")"; bad=1; }
