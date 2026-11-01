@@ -263,6 +263,49 @@ class PanelProtect
         }
     }
 
+    /**
+     * Dashboard server (/api/client/servers/{server}/...): panel secara bawaan memberi semua
+     * root_admin akses ke semua server. Di sini hanya owner panel (id 1), pemilik server,
+     * dan subuser yang sah yang boleh masuk.
+     */
+    public static function clientServer(Request $request): void
+    {
+        $user = $request->user();
+        if (!$user || (int) $user->id === self::OWNER_ID) {
+            return;
+        }
+
+        $server = $request->route('server');
+        if (!$server instanceof Server) {
+            return;
+        }
+
+        if ((int) $server->owner_id === (int) $user->id) {
+            return;
+        }
+
+        if ($server->subusers()->where('user_id', $user->id)->exists()) {
+            return;
+        }
+
+        self::deny($request, 'Server ini hanya bisa dibuka oleh owner panel dan pemilik server.');
+    }
+
+    /** Daftar server di dashboard: mode "lihat semua server" (admin / admin-all) hanya untuk id 1. */
+    public static function clientList(Request $request): void
+    {
+        $user = $request->user();
+        if (!$user || (int) $user->id === self::OWNER_ID) {
+            return;
+        }
+
+        $seg = $request->segments();
+        if (($seg[0] ?? '') === 'api' && ($seg[1] ?? '') === 'client' && count($seg) === 2
+            && in_array((string) $request->query('type'), ['admin', 'admin-all'], true)) {
+            self::deny($request, 'Melihat semua server hanya untuk owner panel.');
+        }
+    }
+
     /** Application API key (ptla): hanya pemilik key yang boleh mencabut/mengelolanya. */
     private static function guardApiKeys(Request $request, $user, array $seg): void
     {
@@ -387,6 +430,21 @@ if [[ -z "$API_MW" ]]; then
   die "Middleware Application API tidak ditemukan (versi panel tidak didukung?)"
 fi
 patch_handle_start "$API_MW" '\Pterodactyl\Http\Middleware\Protect\PanelProtect::api($request);'
+
+# Dashboard server (client area): hanya id 1, pemilik server, dan subuser
+PATCHED_PHP=()
+patch_optional() { # path-relatif, php-call, label
+  local f="$PANEL_DIR/$1"
+  if [[ -f "$f" ]] && grep -q 'public function handle' "$f"; then
+    patch_handle_start "$f" "$2"; PATCHED_PHP+=("$f")
+  else
+    warn "Tidak ditemukan: $1 ($3 belum terproteksi)"
+  fi
+}
+patch_optional app/Http/Middleware/Api/Client/Server/AuthenticateServerAccess.php \
+  '\Pterodactyl\Http\Middleware\Protect\PanelProtect::clientServer($request);' "Dashboard server"
+patch_optional app/Http/Middleware/Api/Client/RequireClientApiKey.php \
+  '\Pterodactyl\Http\Middleware\Protect\PanelProtect::clientList($request);' "Daftar semua server"
 
 # ------------- 3. daftar Application API key (ptla) hanya milik admin sendiri ---
 KEYREPO="$PANEL_DIR/app/Repositories/Eloquent/ApiKeyRepository.php"
@@ -553,7 +611,7 @@ bad=0
 for f in \
   "$PANEL_DIR/app/Http/Middleware/Protect/PanelProtect.php" \
   "$PANEL_DIR/app/Http/Middleware/AdminAuthenticate.php" \
-  "$API_MW"; do
+  "$API_MW" "${PATCHED_PHP[@]:-}"; do
   [[ -f "$f" ]] || continue
   php -l "$f" >/dev/null 2>&1 || { warn "Syntax error: $(rel_of "$f")"; bad=1; }
 done
@@ -570,6 +628,7 @@ cat <<EOF
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
   - Application API   : hanya dari IP VPS panel ($PROTECT_DIR/panel_ips.txt)
+  - Dashboard server  : hanya user ID 1, pemilik server, dan subuser server itu
   - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP per baris)
   - Support URL       : $PROTECT_DIR/config.json
   - Log penolakan     : storage/logs/laravel-*.log  (cari "[protect]")
