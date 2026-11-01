@@ -454,6 +454,25 @@ else
   warn "Tidak bisa memastikan daftar key di /admin/api dibatasi per admin, cek $(rel_of "$KEYREPO")"
 fi
 
+# Tabel "Credentials" di /admin/api: tampilkan hanya key milik admin yang sedang login
+# (berlaku untuk semua admin, termasuk id 1), apa pun isi query bawaan panel.
+KEYVIEW="$PANEL_DIR/resources/views/admin/api/index.blade.php"
+if [[ -f "$KEYVIEW" ]]; then
+  if grep -q 'where("user_id", Auth::id())' "$KEYVIEW"; then
+    info "Sudah dipatch: $(rel_of "$KEYVIEW")"
+  else
+    backup "$KEYVIEW"
+    perl -0pi -e 's/\@foreach\s*\(\s*\$keys\s+as\s+\$key\s*\)/\@foreach (\$keys->where("user_id", Auth::id()) as \$key)/' "$KEYVIEW"
+    if grep -q 'where("user_id", Auth::id())' "$KEYVIEW"; then
+      info "Patch: $(rel_of "$KEYVIEW") (hanya key milik sendiri yang tampil)"
+    else
+      warn "Pola @foreach(\$keys as \$key) tidak ditemukan di $(rel_of "$KEYVIEW"), daftar key belum difilter."
+    fi
+  fi
+else
+  warn "Tidak ditemukan: $(rel_of "$KEYVIEW") (daftar key belum difilter)"
+fi
+
 # --------------------------------------------- 4. notifikasi welcome (toast) ---
 info "Membuat notifikasi welcome"
 write_file "$PANEL_DIR/resources/views/partials/protect-welcome.blade.php" <<'BLADE'
