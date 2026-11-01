@@ -152,8 +152,13 @@ esac
 
 # ------------------------------------------------------------- input config ---
 SUPPORT_URL="${SUPPORT_URL:-}"
+OLD_SUPPORT=""
+if [[ -f "$PROTECT_DIR/config.json" ]]; then
+  OLD_SUPPORT="$(grep -o '"support_url":"[^"]*"' "$PROTECT_DIR/config.json" | cut -d'"' -f4 || true)"
+fi
 if [[ -z "$SUPPORT_URL" ]]; then
-  read -r -p "Link contact support (https://t.me/username, kosongkan jika tidak ada): " SUPPORT_URL || true
+  read -r -p "Link contact support (https://t.me/username)${OLD_SUPPORT:+ [Enter = pakai $OLD_SUPPORT]}: " SUPPORT_URL || true
+  SUPPORT_URL="${SUPPORT_URL:-$OLD_SUPPORT}"
 fi
 url_re='^https?://[A-Za-z0-9._~:/?#@!&()*+,;=%-]+$'
 if [[ -n "$SUPPORT_URL" && ! "$SUPPORT_URL" =~ $url_re ]]; then
@@ -174,13 +179,13 @@ detect_panel_ips() {
   } | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
 }
 PANEL_IPS="$(detect_panel_ips)"
-info "IP panel terdeteksi (satu-satunya IP yang boleh akses Application API):"
+info "IP panel terdeteksi (satu-satunya IP yang boleh memakai Application API):"
 echo "${PANEL_IPS:-  (tidak terdeteksi)}" | sed 's/^/    /'
 
 if [[ -z "$PANEL_IPS" ]]; then
   warn "IP panel tidak terdeteksi otomatis."
   read -r -p "Masukkan IP VPS panel (IPv4/IPv6, boleh ipv4:port): " manual_ip || true
-  PANEL_IPS="$(normalize_ip "${manual_ip:-}")" || die "IP tidak valid. Tanpa IP panel, Application API akan terkunci."
+  PANEL_IPS="$(normalize_ip "${manual_ip:-}")" || die "IP tidak valid."
 fi
 
 # IP tambahan (opsional, TIDAK ditanyakan): ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"
@@ -194,7 +199,10 @@ for raw in "${_ips[@]:-}"; do
 done
 
 mkdir -p "$PROTECT_DIR" "$BK"
-printf '%s\n' "${CLEAN_IPS[@]:-}" | sed '/^$/d' | sort -u > "$PROTECT_DIR/allowed_ips.txt"
+# IP tambahan yang sudah ada tidak dihapus, hanya digabung
+{ cat "$PROTECT_DIR/allowed_ips.txt" 2>/dev/null || true; printf '%s\n' "${CLEAN_IPS[@]:-}"; } \
+  | sed '/^$/d' | sort -u > "$PROTECT_DIR/allowed_ips.txt.new"
+mv "$PROTECT_DIR/allowed_ips.txt.new" "$PROTECT_DIR/allowed_ips.txt"
 printf '%s\n' "$PANEL_IPS"                         > "$PROTECT_DIR/panel_ips.txt"
 printf '{"support_url":"%s"}\n' "$SUPPORT_URL"      > "$PROTECT_DIR/config.json"
 
@@ -251,6 +259,12 @@ class PanelProtect
             if ($server && (int) $server->owner_id !== (int) $user->id) {
                 self::deny($request, 'Kamu tidak boleh menghapus server milik orang lain.');
             }
+        }
+
+        // Hanya owner (id 1) yang boleh membuat / menjadikan user dengan role admin.
+        if ($section === 'users' && in_array($method, ['POST', 'PATCH', 'PUT'], true)
+            && $request->boolean('root_admin')) {
+            self::deny($request, 'Hanya owner panel yang bisa membuat atau menjadikan user admin.');
         }
 
         // Admin utama (id 1): tidak boleh diedit / dihapus.
@@ -330,15 +344,24 @@ class PanelProtect
 
         $ip = strtolower((string) $request->ip());
 
-        // Application API hanya boleh dipanggil dari VPS panel sendiri
-        // (+ IP tambahan opsional di allowed_ips.txt). IP lain ditolak.
-        $allowed = array_merge(
-            self::lines('panel_ips.txt'),
-            self::lines('allowed_ips.txt'),
-            ['127.0.0.1', '::1']
-        );
-        if (!in_array($ip, $allowed, true)) {
-            self::deny($request, 'Application API hanya bisa diakses dari server panel.');
+        // Application API (endpoint dokumentasi API) hanya bisa dipakai bila dijalankan dari
+        // VPS panel itu sendiri (bot / script yang jalan di VPS yang sama dengan panel).
+        // Request dari server lain ditolak. Saklar darurat: buat file
+        // storage/protect/disable_ip_lock untuk mematikan batas ini.
+        if (!is_file(storage_path('protect/disable_ip_lock'))) {
+            $allowed = array_merge(
+                self::lines('panel_ips.txt'),
+                self::lines('allowed_ips.txt'),
+                ['127.0.0.1', '::1']
+            );
+            // Request ke IP publik VPS dari VPS itu sendiri: alamat sumber = alamat tujuan.
+            $serverAddr = strtolower((string) $request->server('SERVER_ADDR'));
+            if ($serverAddr !== '') {
+                $allowed[] = $serverAddr;
+            }
+            if (!in_array($ip, $allowed, true)) {
+                self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').');
+            }
         }
 
         // Pemilik API key harus admin panel / owner.
@@ -361,6 +384,12 @@ class PanelProtect
         $section = $seg[2] ?? '';
         $target = $seg[3] ?? null;
         $method = strtoupper($request->method());
+
+        // Create / ubah user lewat API: role admin (root_admin) hanya boleh dibuat oleh owner (id 1).
+        if ($section === 'users' && in_array($method, ['POST', 'PATCH', 'PUT'], true)
+            && $request->boolean('root_admin')) {
+            self::deny($request, 'Hanya owner panel yang bisa membuat atau menjadikan user admin.');
+        }
 
         if ($section === 'users' && (int) $target === self::OWNER_ID && $method !== 'GET') {
             self::deny($request, 'Akun owner panel tidak boleh diedit atau dihapus.');
@@ -643,8 +672,9 @@ cat <<EOF
 
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
-  - Application API   : hanya dari IP VPS panel ($PROTECT_DIR/panel_ips.txt)
-  - Dashboard server  : hanya user ID 1, pemilik server, dan subuser server itu
+  - Application API   : hanya dari VPS panel ini (IP: $PROTECT_DIR/panel_ips.txt, localhost)
+  - Matikan batas IP  : touch $PROTECT_DIR/disable_ip_lock  (hapus file untuk menyalakan lagi)
+  - Role admin        : hanya user ID 1 yang bisa membuat / menjadikan user admin
   - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP per baris)
   - Support URL       : $PROTECT_DIR/config.json
   - Log penolakan     : storage/logs/laravel-*.log  (cari "[protect]")
