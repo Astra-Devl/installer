@@ -7,6 +7,8 @@
 #     bash protect-pterodactyl.sh uninstall    -> langsung uninstall (wajib isi IP VPS)
 #     bash protect-pterodactyl.sh theme-login | theme-app | theme-admin | theme-all | theme-uninstall
 #  Format IP: IPv4, IPv6, atau IPv4:port / [IPv6]:port (port acak diabaikan)
+#  Cek otomatis saat install: IP yang dikirim harus IP VPS ini DAN domain panel (APP_URL) harus
+#  mengarah ke IP itu (A record). Kalau beda, install berhenti. Lewati: SKIP_IP_CHECK=1 / SKIP_DOMAIN_CHECK=1
 #  Opsional (env): PANEL_DIR=/var/www/pterodactyl SUPPORT_URL=https://t.me/xxx
 #                  ALLOWED_IPS="IP_TAMBAHAN"(opsional)  UNINSTALL_IP="1.2.3.4"  VPS_IP="1.2.3.4"
 # =============================================================================
@@ -767,6 +769,103 @@ is_private_ip() {
   return 1
 }
 
+canon_ip() { # bentuk baku IP (IPv6 compress/expand dianggap sama)
+  php -r '$b = @inet_pton($argv[1]); echo $b === false ? strtolower($argv[1]) : inet_ntop($b);' "$1"
+}
+
+# Semua IP global milik VPS ini + IP publik keluar (api.ipify.org)
+local_ips() {
+  {
+    ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true
+    echo
+    curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true
+    echo
+    curl -6fsS --max-time 5 https://api6.ipify.org 2>/dev/null || true
+    echo
+  } | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
+}
+
+# Host dari APP_URL di .env panel (tanpa skema/port)
+panel_host() {
+  [[ -f "$PANEL_DIR/.env" ]] || return 0
+  grep -E '^APP_URL=' "$PANEL_DIR/.env" | head -1 | cut -d= -f2- | tr -d "\"'" \
+    | sed -E 's#^https?://##; s#[/:].*$##' || true
+}
+
+# Ubah domain jadi IPv4 (A) / IPv6 (AAAA) lewat DNS publik (seperti check-host), bukan /etc/hosts.
+# Urutan: DNS-over-HTTPS Cloudflare -> dig @1.1.1.1 -> getent (cadangan terakhir).
+resolve_domain() { # host type(A|AAAA)
+  local host="$1" type="$2" out="" re
+  [[ "$type" == "A" ]] && re='^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || re='^[0-9a-fA-F:]*:[0-9a-fA-F:.]*$'
+  out="$(curl -fsS --max-time 6 -H 'accept: application/dns-json' \
+          "https://cloudflare-dns.com/dns-query?name=${host}&type=${type}" 2>/dev/null \
+        | grep -oE '"data":"[^"]+"' | cut -d'"' -f4 | grep -E "$re" || true)"
+  if [[ -z "$out" ]] && command -v dig >/dev/null; then
+    out="$(dig +short "$type" "$host" @1.1.1.1 2>/dev/null | grep -E "$re" || true)"
+  fi
+  if [[ -z "$out" ]]; then
+    if [[ "$type" == "A" ]]; then
+      out="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | grep -E "$re" || true)"
+    else
+      out="$(getent ahostsv6 "$host" 2>/dev/null | awk '{print $1}' | grep -E "$re" || true)"
+    fi
+  fi
+  printf '%s\n' "$out" | sed '/^$/d' | sort -u
+}
+
+# Verifikasi sebelum ada file yang diubah. Install BERHENTI otomatis bila:
+#  1) IP yang dikirim bukan IP VPS ini, atau
+#  2) domain panel (APP_URL) tidak mengarah ke IP yang dikirim.
+# Lewati (tidak disarankan): SKIP_IP_CHECK=1 / SKIP_DOMAIN_CHECK=1
+verify_vps_ip() {
+  local ip="$1" want mine dom host type label x found=0
+  if [[ "${SKIP_IP_CHECK:-0}" == "1" ]]; then
+    warn "SKIP_IP_CHECK=1: pengecekan IP VPS dilewati."
+    return 0
+  fi
+  want="$(canon_ip "$ip")"
+
+  mine="$(local_ips)"
+  while IFS= read -r x; do
+    if [[ -n "$x" && "$(canon_ip "$x")" == "$want" ]]; then found=1; fi
+  done <<< "$mine"
+  if (( found == 0 )); then
+    warn "IP yang dikirim ($ip) BUKAN IP VPS ini."
+    warn "IP milik VPS ini: $(tr '\n' ' ' <<< "$mine")"
+    die "Install dihentikan otomatis. Kirim IP VPS panel yang benar."
+  fi
+  info "Cek IP VPS: $ip cocok dengan VPS ini."
+
+  if [[ "${SKIP_DOMAIN_CHECK:-0}" == "1" ]]; then
+    warn "SKIP_DOMAIN_CHECK=1: pengecekan domain dilewati."
+    return 0
+  fi
+  host="$(panel_host)"
+  if [[ -z "$host" || "$host" == "localhost" || "$host" =~ ^[0-9.]+$ || "$host" == "["* ]]; then
+    warn "APP_URL bukan domain (${host:-kosong}), pengecekan domain dilewati."
+    return 0
+  fi
+  if [[ "$ip" == *:* ]]; then type="AAAA"; label="IPv6"; else type="A"; label="IPv4"; fi
+  dom="$(resolve_domain "$host" "$type")"
+  if [[ -n "$dom" ]]; then
+    info "Domain panel $host -> $label: $(tr '\n' ' ' <<< "$dom")"
+  else
+    info "Domain panel $host -> $label: (tidak ada record $type)"
+  fi
+  if [[ -z "$dom" ]]; then
+    die "Domain $host tidak punya record $type. Arahkan domain ke $ip lalu ulangi. Install dihentikan."
+  fi
+  found=0
+  while IFS= read -r x; do
+    if [[ -n "$x" && "$(canon_ip "$x")" == "$want" ]]; then found=1; fi
+  done <<< "$dom"
+  if (( found == 0 )); then
+    warn "Domain panel $host mengarah ke $(tr '\n' ' ' <<< "$dom"), bukan $ip."
+    die "Install dihentikan otomatis. Arahkan domain ke $ip. (Domain di balik Cloudflare/proxy: SKIP_DOMAIN_CHECK=1)"
+  fi
+  info "Cek domain: $host -> $ip cocok."
+}
+
 # IP VPS panel = HANYA IP yang dikirim di sini. IP internal (172.x.x.x dari docker/Wings, dll)
 # TIDAK ikut dideteksi / didaftarkan. Enter = pakai IP publik hasil deteksi api.ipify.org.
 DEFAULT_IP="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
@@ -779,6 +878,7 @@ VPS_IP="$(normalize_ip "$VPS_IP_INPUT")" || die "IP VPS tidak valid: '$VPS_IP_IN
 if is_private_ip "$VPS_IP"; then
   die "IP $VPS_IP adalah IP internal/private (bukan IP VPS publik). Kirim IP publik VPS panel."
 fi
+verify_vps_ip "$VPS_IP"
 PANEL_IPS="$VPS_IP"
 info "IP VPS panel terdaftar (satu-satunya IP yang boleh memakai Application API): $VPS_IP"
 
@@ -807,16 +907,9 @@ mv "$PROTECT_DIR/allowed_ips.txt.new" "$PROTECT_DIR/allowed_ips.txt"
 printf '%s\n' "$PANEL_IPS"                         > "$PROTECT_DIR/panel_ips.txt"
 printf '{"support_url":"%s"}\n' "$SUPPORT_URL"      > "$PROTECT_DIR/config.json"
 
-# Jaringan bridge Docker/Wings di VPS ini (docker0, pterodactyl0, br-*): bot/script yang jalan di
-# container pada VPS yang sama terbaca panel sebagai 172.x.x.x. Request dari subnet ini dianggap
-# berasal dari IP VPS panel. Kosongkan isi file ini untuk mematikan perilaku tersebut.
-{
-  echo "# subnet bridge Docker di VPS ini (auto-detect saat install). Kosongkan untuk menonaktifkan."
-  ip -o addr show scope global 2>/dev/null \
-    | awk '$2 ~ /^(docker[0-9]*|pterodactyl[0-9]*|br-.*)$/ {print $4}' | sort -u
-} > "$PROTECT_DIR/local_networks.txt" || true
-LOCAL_NETS="$(grep -v '^#' "$PROTECT_DIR/local_networks.txt" 2>/dev/null | sed '/^$/d' | tr '\n' ' ' || true)"
-info "Container di VPS ini dianggap IP VPS ($VPS_IP). Subnet lokal: ${LOCAL_NETS:-(tidak terdeteksi)}"
+# Versi lama memakai local_networks.txt (menganggap semua container/proxy 172.x sebagai VPS).
+# Itu membuka kunci IP untuk semua request yang lewat proxy, jadi file ini dihapus dan tidak dipakai lagi.
+rm -f "$PROTECT_DIR/local_networks.txt"
 
 # ------------------------------------------------------ 1. kelas proteksi ---
 info "Membuat app/Http/Middleware/Protect/PanelProtect.php"
@@ -956,13 +1049,6 @@ class PanelProtect
 
         $ip = self::clientIp($request);
 
-        // Bot/script di container (docker0 / pterodactyl0) pada VPS yang sama terbaca sebagai 172.x.x.x.
-        // Request dari subnet lokal VPS ini (local_networks.txt) dianggap berasal dari IP VPS panel.
-        $vpsIp = self::lines('panel_ips.txt')[0] ?? '';
-        if ($vpsIp !== '' && self::isPrivate($ip) && self::matches($ip, self::lines('local_networks.txt'))) {
-            $ip = self::norm($vpsIp);
-        }
-
         // Application API hanya bisa dipakai dari IP VPS yang dikirim saat install (panel_ips.txt)
         // + IP tambahan opsional (allowed_ips.txt). Alamat internal (172.x.x.x docker, SERVER_ADDR,
         // localhost) TIDAK otomatis diizinkan. Request dari server lain ditolak.
@@ -970,9 +1056,14 @@ class PanelProtect
         if (!is_file(storage_path('protect/disable_ip_lock'))) {
             $allowed = array_merge(self::lines('panel_ips.txt'), self::lines('allowed_ips.txt'));
             if (!self::matches($ip, $allowed)) {
-                $hint = self::isPrivate($ip)
-                    ? ' Jika ini bot/script di VPS yang sama (container), tambahkan IP/subnet-nya ke storage/protect/allowed_ips.txt; jika lewat proxy, ke trusted_proxies.txt.'
-                    : '';
+                $hint = '';
+                if (self::isPrivate($ip)) {
+                    $peer = self::norm((string) $request->server('REMOTE_ADDR'));
+                    $hdr = self::realIpHeader();
+                    $hint = self::isTrustedProxy($peer)
+                        ? ' Proxy ' . $peer . ' belum meneruskan IP asli (header ' . $hdr . ' kosong): atur proxy agar mengirim header itu.'
+                        : ' Proxy ' . $peer . ' belum dipercaya: tambahkan ke storage/protect/trusted_proxies.txt.';
+                }
                 self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').' . $hint);
             }
         }
@@ -1092,28 +1183,38 @@ class PanelProtect
         }
 
         $peer = self::norm((string) $request->server('REMOTE_ADDR'));
-        if (!self::matches($peer, array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')))) {
+        if (!self::isTrustedProxy($peer)) {
             return $ip;
         }
 
-        $cands = [];
-        foreach (['CF-Connecting-IP', 'X-Real-IP'] as $h) {
-            $v = trim((string) $request->header($h));
-            if ($v !== '') {
-                $cands[] = $v;
-            }
-        }
-        // X-Forwarded-For: baca dari kanan (entri paling kanan ditambahkan proxy kita sendiri).
-        $cands = array_merge($cands, array_reverse(explode(',', (string) $request->header('X-Forwarded-For'))));
-
+        // Hanya SATU header yang dibaca (default X-Forwarded-For; ganti lewat real_ip_header.txt, mis.
+        // CF-Connecting-IP). Dibaca dari kanan: entri paling kanan ditambahkan proxy kita sendiri,
+        // entri di kirinya bisa dipalsukan klien. Hop proxy internal / tepercaya dilewati.
+        $cands = array_reverse(explode(',', (string) $request->header(self::realIpHeader())));
         foreach ($cands as $c) {
             $c = self::norm($c);
-            if ($c !== '' && !self::isPrivate($c)) {
-                return $c;
+            if ($c === '' || self::isPrivate($c) || self::isTrustedProxy($c)) {
+                continue;
             }
+
+            return $c;
         }
 
         return $ip;
+    }
+
+    /** Proxy tepercaya: localhost + isi storage/protect/trusted_proxies.txt (IP atau CIDR, satu per baris). */
+    private static function isTrustedProxy(string $ip): bool
+    {
+        return self::matches($ip, array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')));
+    }
+
+    /** Nama header berisi IP asli dari proxy. Default X-Forwarded-For; ubah lewat storage/protect/real_ip_header.txt. */
+    private static function realIpHeader(): string
+    {
+        $h = self::lines('real_ip_header.txt')[0] ?? '';
+
+        return preg_match('/^[a-z0-9-]{1,64}$/', $h) ? $h : 'x-forwarded-for';
     }
 
     private static function lines(string $file): array
@@ -1132,6 +1233,10 @@ class PanelProtect
         Log::warning('[protect] ' . $message, [
             'user' => optional($request->user())->id,
             'ip' => $request->ip(),
+            'peer' => $request->server('REMOTE_ADDR'),
+            'xff' => $request->header('X-Forwarded-For'),
+            'x_real_ip' => $request->header('X-Real-IP'),
+            'cf_ip' => $request->header('CF-Connecting-IP'),
             'method' => $request->method(),
             'path' => $request->path(),
         ]);
@@ -1393,8 +1498,10 @@ cat <<EOF
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
   - Application API   : hanya dari IP VPS yang dikirim: $VPS_IP (daftar: $PROTECT_DIR/panel_ips.txt)
-                        Container di VPS ini (subnet: $PROTECT_DIR/local_networks.txt) dianggap IP VPS tersebut
-  - Proxy lokal       : $PROTECT_DIR/trusted_proxies.txt  (opsional, IP proxy yang header IP aslinya dipercaya)
+                        IP internal (172.x.x.x) TIDAK otomatis diizinkan; IP asli dibaca dari header proxy.
+  - Proxy tepercaya   : $PROTECT_DIR/trusted_proxies.txt  (IP/CIDR proxy yang header IP aslinya dipercaya,
+                        mis. 172.18.0.2; proxy harus mengirim X-Forwarded-For)
+  - Header IP asli    : $PROTECT_DIR/real_ip_header.txt  (opsional, default x-forwarded-for; mis. cf-connecting-ip)
   - Matikan batas IP  : touch $PROTECT_DIR/disable_ip_lock  (hapus file untuk menyalakan lagi)
   - Role admin        : hanya user ID 1 yang bisa membuat / menjadikan user admin
   - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP atau subnet CIDR per baris,
