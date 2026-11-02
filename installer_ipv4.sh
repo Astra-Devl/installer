@@ -787,6 +787,13 @@ CLEAN_IPS=()
 IFS=', ' read -r -a _ips <<< "${ALLOWED_IPS:-}"
 for raw in "${_ips[@]:-}"; do
   [[ -z "$raw" ]] && continue
+  # Subnet CIDR (mis. 172.18.0.0/16 untuk bot di container Docker pada VPS yang sama)
+  if [[ "$raw" =~ ^([0-9a-fA-F:.]+)/([0-9]{1,3})$ ]]; then
+    cidr_ip="${BASH_REMATCH[1]}"; cidr_len="${BASH_REMATCH[2]}"
+    nip="$(normalize_ip "$cidr_ip")" || { warn "Subnet '$raw' tidak valid, dilewati."; continue; }
+    (( cidr_len >= 1 )) || { warn "Subnet '$raw' (/0) tidak diizinkan, dilewati."; continue; }
+    CLEAN_IPS+=("$nip/$cidr_len"); continue
+  fi
   nip="$(normalize_ip "$raw")" || { warn "IP '$raw' tidak valid, dilewati."; continue; }
   grep -qxF "$nip" <<< "$PANEL_IPS" && continue
   CLEAN_IPS+=("$nip")
@@ -799,6 +806,17 @@ mkdir -p "$PROTECT_DIR" "$BK"
 mv "$PROTECT_DIR/allowed_ips.txt.new" "$PROTECT_DIR/allowed_ips.txt"
 printf '%s\n' "$PANEL_IPS"                         > "$PROTECT_DIR/panel_ips.txt"
 printf '{"support_url":"%s"}\n' "$SUPPORT_URL"      > "$PROTECT_DIR/config.json"
+
+# Jaringan bridge Docker/Wings di VPS ini (docker0, pterodactyl0, br-*): bot/script yang jalan di
+# container pada VPS yang sama terbaca panel sebagai 172.x.x.x. Request dari subnet ini dianggap
+# berasal dari IP VPS panel. Kosongkan isi file ini untuk mematikan perilaku tersebut.
+{
+  echo "# subnet bridge Docker di VPS ini (auto-detect saat install). Kosongkan untuk menonaktifkan."
+  ip -o addr show scope global 2>/dev/null \
+    | awk '$2 ~ /^(docker[0-9]*|pterodactyl[0-9]*|br-.*)$/ {print $4}' | sort -u
+} > "$PROTECT_DIR/local_networks.txt" || true
+LOCAL_NETS="$(grep -v '^#' "$PROTECT_DIR/local_networks.txt" 2>/dev/null | sed '/^$/d' | tr '\n' ' ' || true)"
+info "Container di VPS ini dianggap IP VPS ($VPS_IP). Subnet lokal: ${LOCAL_NETS:-(tidak terdeteksi)}"
 
 # ------------------------------------------------------ 1. kelas proteksi ---
 info "Membuat app/Http/Middleware/Protect/PanelProtect.php"
@@ -938,18 +956,22 @@ class PanelProtect
 
         $ip = self::clientIp($request);
 
+        // Bot/script di container (docker0 / pterodactyl0) pada VPS yang sama terbaca sebagai 172.x.x.x.
+        // Request dari subnet lokal VPS ini (local_networks.txt) dianggap berasal dari IP VPS panel.
+        $vpsIp = self::lines('panel_ips.txt')[0] ?? '';
+        if ($vpsIp !== '' && self::isPrivate($ip) && self::matches($ip, self::lines('local_networks.txt'))) {
+            $ip = self::norm($vpsIp);
+        }
+
         // Application API hanya bisa dipakai dari IP VPS yang dikirim saat install (panel_ips.txt)
         // + IP tambahan opsional (allowed_ips.txt). Alamat internal (172.x.x.x docker, SERVER_ADDR,
         // localhost) TIDAK otomatis diizinkan. Request dari server lain ditolak.
         // Saklar darurat: buat file storage/protect/disable_ip_lock untuk mematikan batas ini.
         if (!is_file(storage_path('protect/disable_ip_lock'))) {
-            $allowed = array_map([self::class, 'norm'], array_merge(
-                self::lines('panel_ips.txt'),
-                self::lines('allowed_ips.txt')
-            ));
-            if (!in_array($ip, $allowed, true)) {
+            $allowed = array_merge(self::lines('panel_ips.txt'), self::lines('allowed_ips.txt'));
+            if (!self::matches($ip, $allowed)) {
                 $hint = self::isPrivate($ip)
-                    ? ' Proxy belum meneruskan IP asli (lihat storage/protect/trusted_proxies.txt).'
+                    ? ' Jika ini bot/script di VPS yang sama (container), tambahkan IP/subnet-nya ke storage/protect/allowed_ips.txt; jika lewat proxy, ke trusted_proxies.txt.'
                     : '';
                 self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').' . $hint);
             }
@@ -1010,6 +1032,53 @@ class PanelProtect
         return $bin === false ? $ip : (string) inet_ntop($bin);
     }
 
+    /** Cocokkan IP dengan daftar: IP tunggal atau subnet CIDR (mis. 172.18.0.0/16, 2001:db8::/32). */
+    private static function matches(string $ip, array $list): bool
+    {
+        $bin = @inet_pton($ip);
+        if ($bin === false) {
+            return false;
+        }
+
+        foreach ($list as $entry) {
+            $entry = trim((string) $entry);
+            if ($entry === '') {
+                continue;
+            }
+            if (strpos($entry, '/') === false) {
+                if (self::norm($entry) === $ip) {
+                    return true;
+                }
+                continue;
+            }
+
+            [$net, $bits] = explode('/', $entry, 2);
+            $nb = @inet_pton(self::norm($net));
+            // /0 sengaja diabaikan (akan mengizinkan semua IP).
+            if ($nb === false || strlen($nb) !== strlen($bin) || !ctype_digit($bits) || (int) $bits === 0) {
+                continue;
+            }
+            $bits = (int) $bits;
+            if ($bits > strlen($nb) * 8) {
+                continue;
+            }
+            $bytes = intdiv($bits, 8);
+            $rem = $bits % 8;
+            if ($bytes > 0 && substr($bin, 0, $bytes) !== substr($nb, 0, $bytes)) {
+                continue;
+            }
+            if ($rem === 0) {
+                return true;
+            }
+            $mask = (0xFF << (8 - $rem)) & 0xFF;
+            if ((ord($bin[$bytes]) & $mask) === (ord($nb[$bytes]) & $mask)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * IP asli pengirim. Jika IP yang terbaca masih internal (mis. 172.x.x.x) karena ada proxy/tunnel
      * lokal, ambil IP asli dari header proxy. Header HANYA dipercaya bila koneksi langsung datang
@@ -1023,8 +1092,7 @@ class PanelProtect
         }
 
         $peer = self::norm((string) $request->server('REMOTE_ADDR'));
-        $trusted = array_map([self::class, 'norm'], array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')));
-        if (!in_array($peer, $trusted, true)) {
+        if (!self::matches($peer, array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')))) {
             return $ip;
         }
 
@@ -1325,11 +1393,12 @@ cat <<EOF
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
   - Application API   : hanya dari IP VPS yang dikirim: $VPS_IP (daftar: $PROTECT_DIR/panel_ips.txt)
-                        IP internal (172.x.x.x, localhost) TIDAK otomatis diizinkan
+                        Container di VPS ini (subnet: $PROTECT_DIR/local_networks.txt) dianggap IP VPS tersebut
   - Proxy lokal       : $PROTECT_DIR/trusted_proxies.txt  (opsional, IP proxy yang header IP aslinya dipercaya)
   - Matikan batas IP  : touch $PROTECT_DIR/disable_ip_lock  (hapus file untuk menyalakan lagi)
   - Role admin        : hanya user ID 1 yang bisa membuat / menjadikan user admin
-  - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP per baris)
+  - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP atau subnet CIDR per baris,
+                        mis. 172.18.0.2 atau 172.18.0.0/16 untuk bot di container; langsung berlaku)
   - Support URL       : $PROTECT_DIR/config.json
   - Log penolakan     : storage/logs/laravel-*.log  (cari "[protect]")
   - Batalkan          : bash $0 uninstall  (wajib isi IP VPS)
