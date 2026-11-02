@@ -1061,8 +1061,12 @@ class PanelProtect
                     $peer = self::norm((string) $request->server('REMOTE_ADDR'));
                     $hdr = self::realIpHeader();
                     $hint = self::isTrustedProxy($peer)
-                        ? ' Proxy ' . $peer . ' belum meneruskan IP asli (header ' . $hdr . ' kosong): atur proxy agar mengirim header itu.'
-                        : ' Proxy ' . $peer . ' belum dipercaya: tambahkan ke storage/protect/trusted_proxies.txt.';
+                        ? ' ' . $peer . ' dipercaya sebagai proxy tetapi tidak mengirim header ' . $hdr . '.'
+                            . ' Jika itu proxy: atur agar mengirim header tsb.'
+                            . ' Jika itu bot/container (bukan proxy): hapus dari trusted_proxies.txt dan tambahkan ke allowed_ips.txt.'
+                        : ' Sumber ' . $peer . ' belum diizinkan.'
+                            . ' Jika itu proxy: tambahkan ke storage/protect/trusted_proxies.txt.'
+                            . ' Jika itu bot/container: tambahkan ke storage/protect/allowed_ips.txt.';
                 }
                 self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').' . $hint);
             }
