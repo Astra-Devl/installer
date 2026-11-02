@@ -13,7 +13,7 @@
 # =============================================================================
 set -euo pipefail
 
-THEME_ZIP_URL="${THEME_ZIP_URL:-https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/.zip}"
+THEME_ZIP_URL="${THEME_ZIP_URL:-https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/glassbrutal-theme.zip}"
 export PANEL_DIR="${PANEL_DIR:-/var/www/pterodactyl}"
 ACTION="${1:-menu}"
 
