@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Pterodactyl Panel Protect Installer
+#  Pterodactyl Panel Protect Installer  (tanpa whitelist IP VPS) + Tema Neo Brutalism
 #  Pemakaian:
-#     bash protect-pterodactyl.sh              -> menu (Install / Uninstall Protect)
-#     bash protect-pterodactyl.sh install      -> langsung install / update
-#     bash protect-pterodactyl.sh uninstall    -> langsung uninstall (wajib isi IP VPS)
-#     bash protect-pterodactyl.sh theme-login | theme-app | theme-admin | theme-all | theme-uninstall
-#  Format IP: IPv4, IPv6, atau IPv4:port / [IPv6]:port (port acak diabaikan)
-#  Cek otomatis saat install: IP yang dikirim harus IP VPS ini DAN domain panel (APP_URL) harus
-#  mengarah ke IP itu (A record). Kalau beda, install berhenti. Lewati: SKIP_IP_CHECK=1 / SKIP_DOMAIN_CHECK=1
-#  Opsional (env): PANEL_DIR=/var/www/pterodactyl SUPPORT_URL=https://t.me/xxx
-#                  ALLOWED_IPS="IP_TAMBAHAN"(opsional)  UNINSTALL_IP="1.2.3.4"  VPS_IP="1.2.3.4"
+#     bash protect-pterodactyl.sh              -> menu
+#     bash protect-pterodactyl.sh install      -> install / update protect
+#     bash protect-pterodactyl.sh uninstall    -> hapus protect (tanpa input IP)
+#     bash protect-pterodactyl.sh theme-login | theme-app | theme-admin | theme-all
+#     bash protect-pterodactyl.sh theme-brand  -> atur nama + logo header
+#     bash protect-pterodactyl.sh theme-uninstall
+#  Opsional (env): PANEL_DIR=/var/www/pterodactyl  SUPPORT_URL=https://t.me/xxx
+#                  BRAND_NAME="Nama Panel"  BRAND_LOGO="https://.../logo.png | /path/logo.png"
+#                  YES=1 (lewati konfirmasi uninstall)
 # =============================================================================
 set -euo pipefail
 
@@ -62,24 +62,6 @@ write_file() {
   cat > "$f"
 }
 
-# Normalisasi input IP: IPv4, IPv6, ipv4:port, [ipv6]:port -> IP saja (port dibuang)
-normalize_ip() {
-  local v="${1//[[:space:]]/}" ip
-  v="${v,,}"
-  if [[ "$v" =~ ^\[([0-9a-f:.]+)\](:[0-9]{1,5})?$ ]]; then
-    ip="${BASH_REMATCH[1]}"
-  elif [[ "$v" =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3})(:[0-9]{1,5})?$ ]]; then
-    ip="${BASH_REMATCH[1]}"
-    local o part; IFS=. read -r -a part <<< "$ip"
-    for o in "${part[@]}"; do (( 10#$o <= 255 )) || return 1; done
-  elif [[ "$v" =~ ^[0-9a-f:]+$ && "$v" == *:*:* ]]; then
-    ip="$v"
-  else
-    return 1
-  fi
-  echo "$ip"
-}
-
 as_owner() {
   if command -v runuser >/dev/null; then
     (cd "$PANEL_DIR" && runuser -u "$OWNER" -- "$@")
@@ -114,60 +96,71 @@ restore_original() {
   post_steps
 }
 
-# Uninstall: wajib isi IP VPS (IP panel atau IP whitelist) sebagai konfirmasi
+# Uninstall: cukup konfirmasi y/N (tidak lagi meminta IP VPS)
 uninstall_protect() {
-  [[ -d "$BK" && -d "$PROTECT_DIR" ]] || die "Protect belum terpasang (backup tidak ditemukan)."
-  local known input="${UNINSTALL_IP:-}" ip tries=0
-  known="$(cat "$PROTECT_DIR/panel_ips.txt" "$PROTECT_DIR/allowed_ips.txt" 2>/dev/null | tr 'A-F' 'a-f' | sort -u || true)"
-  while (( tries < 3 )); do
-    if [[ -z "$input" ]]; then
-      read -r -p "Masukkan IP VPS (IPv4/IPv6, boleh ipv4:port): " input || true
-    fi
-    if ip="$(normalize_ip "$input")" && grep -qxF "$ip" <<< "$known"; then
-      restore_original
-      info "Proteksi dihapus, file asli dikembalikan."
-      exit 0
-    fi
-    tries=$((tries + 1))
-    warn "IP tidak valid atau tidak cocok ($tries/3)."
-    input=""
-  done
-  die "Verifikasi IP gagal. Uninstall dibatalkan."
+  [[ -d "$BK" ]] || die "Protect belum terpasang (backup tidak ditemukan)."
+  if [[ "${YES:-0}" != "1" ]]; then
+    local a=""
+    read -r -p "Hapus proteksi dan kembalikan file asli? [y/N]: " a || true
+    [[ "${a,,}" == "y" || "${a,,}" == "yes" ]] || die "Uninstall dibatalkan."
+  fi
+  restore_original
+  info "Proteksi dihapus, file asli dikembalikan."
+  exit 0
 }
 
 # =================================================================== TEMA ===
-# Tema Neo Brutalism tanpa build ulang frontend: CSS + JS disuntik lewat Blade.
+# Tema Neo Brutalism murni (tanpa build ulang frontend): shell baru (header + sidebar),
+# ikon Font Awesome solid/regular, nama & logo header bisa diatur (theme-brand).
 THEME_DIR="$PANEL_DIR/storage/protect-theme"
 THEME_CFG="$THEME_DIR/theme.json"
 THEME_PUB="$PANEL_DIR/public/protect-theme"
 THEME_PARTIAL="$PANEL_DIR/resources/views/partials/protect-theme.blade.php"
-THEME_USER_VIEW="$PANEL_DIR/resources/views/templates/base/core.blade.php"
+THEME_WRAPPER_VIEW="$PANEL_DIR/resources/views/templates/wrapper.blade.php"
+THEME_CORE_VIEW="$PANEL_DIR/resources/views/templates/base/core.blade.php"
 THEME_ADMIN_VIEW="$PANEL_DIR/resources/views/layouts/admin.blade.php"
 
 theme_flag() { if grep -q "\"$1\":true" "$THEME_CFG" 2>/dev/null; then echo true; else echo false; fi; }
-theme_save() { # login app admin
+theme_get() { # key default
+  php -r '$j=json_decode((string)@file_get_contents($argv[1]),true)?:[];$v=$j[$argv[2]]??$argv[3];echo is_bool($v)?($v?"true":"false"):$v;' \
+    "$THEME_CFG" "$1" "${2:-}"
+}
+theme_set() { # key type(bool|str) value
   mkdir -p "$THEME_DIR"
-  printf '{"v":"%s","login":%s,"app":%s,"admin":%s}\n' "$(date +%s)" "$1" "$2" "$3" > "$THEME_CFG"
+  php -r '$f=$argv[1];$j=json_decode((string)@file_get_contents($f),true)?:[];
+          $j[$argv[2]]=$argv[3]==="bool"?($argv[4]==="true"):$argv[4];$j["v"]=(string)time();
+          file_put_contents($f,json_encode($j,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE)."\n");' \
+    "$THEME_CFG" "$1" "$2" "$3"
+}
+
+theme_user_view() { # view yang punya <head>/<body> (wrapper React app)
+  if [[ -f "$THEME_WRAPPER_VIEW" ]]; then echo "$THEME_WRAPPER_VIEW"; else echo "$THEME_CORE_VIEW"; fi
 }
 
 theme_inject() { # file, area
   local f="$1" area="$2" tag
   [[ -f "$f" ]] || { warn "Tidak ditemukan: $(rel_of "$f")"; return 1; }
   if grep -q 'partials.protect-theme' "$f"; then return 0; fi
-  # Coba sisipkan sebelum </head>, lalu sebelum </body> (tanpa peduli huruf besar/kecil).
+  backup "$f"
   for tag in '</head\s*>' '</body\s*>'; do
     AREA="$area" TAG="$tag" perl -0pi -e 'my $i = q{@includeIf("partials.protect-theme", ["area" => "} . $ENV{AREA} . q{"])}; s/($ENV{TAG})/$i\n$1/i' "$f"
     if grep -q 'partials.protect-theme' "$f"; then
-      info "Patch tema: $(rel_of "$f") (sebelum ${tag%%\\*}>)"
+      info "Patch tema: $(rel_of "$f")"
       return 0
     fi
   done
-  # Fallback terakhir: tambahkan di akhir file.
   printf '\n@includeIf("partials.protect-theme", ["area" => "%s"])\n' "$area" >> "$f"
   warn "Tag </head> dan </body> tidak ada di $(rel_of "$f"); include ditambahkan di akhir file."
 }
+theme_strip() { # hapus include tema dari sebuah view
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  perl -0pi -e 's/[ \t]*\@includeIf\("partials\.protect-theme"[^\n]*\n?//g' "$f"
+}
 theme_inject_all() {
-  theme_inject "$THEME_USER_VIEW" user || true
+  # versi lama menyuntik ke core.blade.php (tidak punya <head>); bersihkan bila wrapper tersedia
+  if [[ -f "$THEME_WRAPPER_VIEW" ]]; then theme_strip "$THEME_CORE_VIEW"; fi
+  theme_inject "$(theme_user_view)" user || true
   theme_inject "$THEME_ADMIN_VIEW" admin || true
 }
 
@@ -178,22 +171,38 @@ theme_write_partial() {
     $__th = json_decode((string) @file_get_contents(storage_path('protect-theme/theme.json')), true) ?: [];
     $__v = $__th['v'] ?? '1';
     $__admin = ($area ?? 'user') === 'admin';
+    $__cfg = json_encode([
+        'brand' => (string) ($__th['brand'] ?? 'Pterodactyl'),
+        'logo' => (string) ($__th['logo'] ?? ''),
+        'login' => !empty($__th['login']),
+        'app' => !empty($__th['app']),
+    ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 @endphp
 @if ($__admin)
     @if (!empty($__th['admin']))
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/v4-shims.min.css">
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap">
         <link rel="stylesheet" href="/protect-theme/base.css?v={{ $__v }}">
         <link rel="stylesheet" href="/protect-theme/admin.css?v={{ $__v }}">
+        <script>window.__PTN = {!! $__cfg !!};</script>
+        <script src="/protect-theme/admin.js?v={{ $__v }}" defer></script>
     @endif
 @elseif (!empty($__th['login']) || !empty($__th['app']))
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&display=swap">
     <link rel="stylesheet" href="/protect-theme/base.css?v={{ $__v }}">
-    <script>document.documentElement.classList.add(location.pathname.indexOf('/auth') === 0 ? 'ptn-auth' : 'ptn-app');</script>
+    <script>
+        window.__PTN = {!! $__cfg !!};
+        document.documentElement.classList.add(location.pathname.indexOf('/auth') === 0 ? 'ptn-auth' : 'ptn-app');
+    </script>
     @if (!empty($__th['login']))
         <link rel="stylesheet" href="/protect-theme/login.css?v={{ $__v }}">
     @endif
     @if (!empty($__th['app']))
         <link rel="stylesheet" href="/protect-theme/app.css?v={{ $__v }}">
-        <script src="/protect-theme/sidebar.js?v={{ $__v }}" defer></script>
     @endif
+    <script src="/protect-theme/sidebar.js?v={{ $__v }}" defer></script>
 @endif
 BLADE
 }
@@ -204,12 +213,11 @@ theme_write_base() {
 :root{
   --ptn-bg:#FFF4D6;--ptn-ink:#111111;
   --ptn-yellow:#FFD60A;--ptn-pink:#FF6B9D;--ptn-blue:#4D96FF;--ptn-green:#5BE584;--ptn-orange:#FF9F1C;
-  --ptn-border:3px solid #111;
-  --ptn-shadow:6px 6px 0 #111;--ptn-shadow-sm:3px 3px 0 #111;
   --ptn-font:"Space Grotesk","Archivo",system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --ptn-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 ::selection{background:var(--ptn-yellow);color:#111}
+.ptn-logo img{display:block;max-height:34px;width:auto}
 CSS
 }
 
@@ -220,7 +228,7 @@ html.ptn-auth body{
   background-color:var(--ptn-bg)!important;
   background-image:radial-gradient(rgba(17,17,17,.14) 1.5px,transparent 1.5px);
   background-size:24px 24px;
-  color:var(--ptn-ink)!important;font-family:var(--ptn-font)!important;
+  color:var(--ptn-ink)!important;font-family:var(--ptn-font)!important;padding-top:64px;
 }
 html.ptn-auth #app,html.ptn-auth #app > div{background:transparent!important}
 html.ptn-auth form > div{
@@ -231,18 +239,14 @@ html.ptn-auth form > div::before{
   content:"LOGIN";position:absolute;top:-18px;left:18px;padding:3px 12px;
   background:var(--ptn-yellow);border:3px solid #111;font:900 13px/1.4 var(--ptn-font);letter-spacing:.14em;color:#111;
 }
-html.ptn-auth h1,html.ptn-auth h2,html.ptn-auth h3{
-  color:#111!important;font-weight:900!important;text-transform:uppercase;letter-spacing:-.01em;
-}
-html.ptn-auth label{
-  color:#111!important;font-weight:800!important;text-transform:uppercase;font-size:12px!important;letter-spacing:.06em;
-}
+html.ptn-auth h1,html.ptn-auth h2,html.ptn-auth h3{color:#111!important;font-weight:900!important;text-transform:uppercase;letter-spacing:-.01em}
+html.ptn-auth label{color:#111!important;font-weight:800!important;text-transform:uppercase;font-size:12px!important;letter-spacing:.06em}
 html.ptn-auth input:not([type=checkbox]):not([type=radio]){
   background:#fff!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
   box-shadow:4px 4px 0 #111!important;font-family:var(--ptn-font)!important;font-weight:600;
 }
 html.ptn-auth input:focus{outline:none!important;background:#FFFBD6!important;box-shadow:6px 6px 0 #111!important}
-html.ptn-auth button[type=submit],html.ptn-auth button.ptn-btn{
+html.ptn-auth button[type=submit]{
   background:var(--ptn-yellow)!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
   box-shadow:5px 5px 0 #111!important;font:900 14px var(--ptn-font)!important;text-transform:uppercase;letter-spacing:.06em;
   transition:transform .08s,box-shadow .08s;
@@ -253,38 +257,46 @@ html.ptn-auth a{color:#111!important;font-weight:800;text-decoration:underline;t
 html.ptn-auth a:hover{background:var(--ptn-yellow)}
 html.ptn-auth p{color:#111!important}
 html.ptn-auth img{filter:none}
+/* header brand di halaman login */
+#ptn-authbrand{
+  position:fixed;top:0;left:0;right:0;height:64px;z-index:80;display:flex;align-items:center;padding:0 16px;
+  background:var(--ptn-yellow);border-bottom:4px solid #111;font-family:var(--ptn-font);
+}
+#ptn-authbrand .ptn-logo{
+  display:flex;align-items:center;gap:10px;padding:4px 14px;background:#fff;color:#111;text-decoration:none;
+  border:3px solid #111;box-shadow:4px 4px 0 #111;font:900 22px var(--ptn-font);text-transform:uppercase;letter-spacing:-.02em;
+}
+#ptn-authbrand .ptn-logo i{font-size:20px}
 CSS
 }
 
 theme_write_app() {
   cat > "$THEME_PUB/app.css" <<'CSS'
-/* Neo Brutalism - dashboard utama (client area) + sidebar */
+/* Neo Brutalism - dashboard utama (client area): shell baru + isi halaman */
 html.ptn-app body{
   background-color:var(--ptn-bg)!important;
   background-image:radial-gradient(rgba(17,17,17,.12) 1.5px,transparent 1.5px);
   background-size:24px 24px;color:var(--ptn-ink);font-family:var(--ptn-font);
 }
 html.ptn-app #app{min-height:100vh}
-html.ptn-app.ptn-has-sidebar #app{margin-left:270px}
+html.ptn-app.ptn-has-sidebar #app{margin-left:280px;padding-top:64px}
 html.ptn-app.ptn-has-sidebar .ptn-hide{display:none!important}
 html.ptn-app h1,html.ptn-app h2,html.ptn-app h3{font-weight:900;text-transform:uppercase;letter-spacing:-.01em}
 
-/* hasil pewarnaan otomatis (sidebar.js) */
+/* pewarnaan otomatis isi halaman (sidebar.js) */
 html.ptn-app .ptn-s0{background:transparent!important}
 html.ptn-app .ptn-s1{background:#fff!important;border:3px solid #111!important;box-shadow:5px 5px 0 #111!important;border-radius:0!important}
 html.ptn-app .ptn-s2{background:var(--ptn-bg)!important;border:2px solid #111!important;border-radius:0!important;box-shadow:none!important}
 html.ptn-app .ptn-accent{border:3px solid #111!important;box-shadow:3px 3px 0 #111!important;border-radius:0!important;filter:saturate(1.35)}
 html.ptn-app .ptn-t{color:#111!important}
-html.ptn-app button.ptn-s1,html.ptn-app button.ptn-s2,html.ptn-app a.ptn-s1,html.ptn-app a.ptn-s2{
-  background:#fff!important;box-shadow:3px 3px 0 #111!important;font-weight:800;
-}
+html.ptn-app button.ptn-s1,html.ptn-app button.ptn-s2,html.ptn-app a.ptn-s1,html.ptn-app a.ptn-s2{background:#fff!important;box-shadow:3px 3px 0 #111!important;font-weight:800}
 html.ptn-app button.ptn-s1:hover,html.ptn-app button.ptn-s2:hover,html.ptn-app a.ptn-s1:hover,html.ptn-app a.ptn-s2:hover{background:var(--ptn-yellow)!important}
 html.ptn-app button.ptn-accent,html.ptn-app a.ptn-accent{font-weight:800;transition:transform .08s,box-shadow .08s}
 html.ptn-app button.ptn-accent:hover,html.ptn-app a.ptn-accent:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111!important}
 html.ptn-app button.ptn-accent:active{transform:translate(2px,2px);box-shadow:none!important}
-
+html.ptn-app #app *{border-radius:0!important}
 html.ptn-app input:not([type=checkbox]):not([type=radio]),html.ptn-app select,html.ptn-app textarea{
-  background:#fff!important;color:#111!important;border:3px solid #111!important;border-radius:0!important;
+  background:#fff!important;color:#111!important;border:3px solid #111!important;
   box-shadow:3px 3px 0 #111!important;font-family:var(--ptn-font);
 }
 html.ptn-app input:focus,html.ptn-app select:focus,html.ptn-app textarea:focus{outline:none!important;background:#FFFBD6!important}
@@ -292,49 +304,67 @@ html.ptn-app table{border-collapse:separate;border-spacing:0}
 html.ptn-app code,html.ptn-app pre,html.ptn-app .font-mono{font-family:var(--ptn-mono)}
 html.ptn-app .xterm{border:3px solid #111}
 
+/* header */
+#ptn-header{
+  position:fixed;top:0;left:0;right:0;height:64px;z-index:80;display:flex;align-items:center;gap:10px;padding:0 14px;
+  background:var(--ptn-yellow);border-bottom:4px solid #111;font-family:var(--ptn-font);color:#111;
+}
+#ptn-header .ptn-logo{
+  display:flex;align-items:center;gap:10px;padding:4px 14px;background:#fff;color:#111;text-decoration:none;
+  border:3px solid #111;box-shadow:4px 4px 0 #111;font:900 22px var(--ptn-font);text-transform:uppercase;letter-spacing:-.02em;
+  max-width:55vw;overflow:hidden;white-space:nowrap;
+}
+#ptn-header .ptn-logo i{font-size:20px}
+#ptn-header .ptn-sp{flex:1}
+#ptn-header .ptn-act{
+  display:flex;align-items:center;gap:8px;padding:8px 14px;cursor:pointer;background:#fff;color:#111;
+  border:3px solid #111;box-shadow:3px 3px 0 #111;font:800 13px var(--ptn-font);text-transform:uppercase;text-decoration:none;
+  transition:transform .08s,box-shadow .08s,background .08s;
+}
+#ptn-header .ptn-act:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 #111;background:var(--ptn-pink)}
+#ptn-header .ptn-act.ptn-out{background:#111;color:var(--ptn-yellow)}
+#ptn-header .ptn-act.ptn-out:hover{background:var(--ptn-pink);color:#111}
+#ptn-burger{display:none}
+
 /* sidebar */
 #ptn-sidebar{
-  position:fixed;top:0;bottom:0;left:0;width:270px;z-index:60;display:flex;flex-direction:column;
-  background:var(--ptn-yellow);border-right:4px solid #111;overflow-y:auto;font-family:var(--ptn-font);color:#111;
+  position:fixed;top:64px;bottom:0;left:0;width:280px;z-index:60;display:flex;flex-direction:column;
+  background:#fff;border-right:4px solid #111;overflow-y:auto;font-family:var(--ptn-font);color:#111;
 }
-#ptn-sidebar .ptn-brand{
-  padding:18px;background:#111;color:var(--ptn-yellow);border-bottom:4px solid #111;
-  font-weight:900;font-size:22px;letter-spacing:-.02em;text-transform:uppercase;word-break:break-word;
+#ptn-sidebar nav{display:flex;flex-direction:column;gap:10px;padding:16px;flex:1}
+#ptn-sidebar .ptn-label{
+  margin:10px 0 0;padding:3px 10px;font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;
+  background:#111;color:var(--ptn-yellow);align-self:flex-start;
 }
-#ptn-sidebar nav{display:flex;flex-direction:column;gap:10px;padding:14px;flex:1}
-#ptn-sidebar .ptn-label{margin:8px 2px 0;font-size:11px;font-weight:900;letter-spacing:.14em;text-transform:uppercase}
-#ptn-sidebar a,#ptn-sidebar button{
-  display:flex;align-items:center;gap:10px;width:100%;padding:11px 14px;text-align:left;cursor:pointer;
-  background:#fff;color:#111;border:3px solid #111;border-radius:0;box-shadow:4px 4px 0 #111;
+#ptn-sidebar a{
+  display:flex;align-items:center;gap:12px;width:100%;padding:11px 14px;text-align:left;cursor:pointer;
+  background:#fff;color:#111;border:3px solid #111;box-shadow:4px 4px 0 #111;
   font:800 13px var(--ptn-font);text-transform:uppercase;letter-spacing:.03em;text-decoration:none;
   transition:transform .08s,box-shadow .08s,background .08s;
 }
-#ptn-sidebar a:hover,#ptn-sidebar button:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111;background:var(--ptn-bg)}
+#ptn-sidebar a i{width:20px;text-align:center;font-size:15px}
+#ptn-sidebar a:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111;background:var(--ptn-yellow)}
 #ptn-sidebar a.ptn-active{background:var(--ptn-pink);transform:translate(2px,2px);box-shadow:2px 2px 0 #111}
-#ptn-sidebar .ptn-foot{padding:14px;border-top:4px solid #111}
-#ptn-sidebar .ptn-foot button{background:#111;color:var(--ptn-yellow)}
-#ptn-sidebar .ptn-foot button:hover{background:var(--ptn-pink);color:#111}
-#ptn-toggle{
-  display:none;position:fixed;top:12px;left:12px;z-index:70;padding:8px 14px;cursor:pointer;
-  background:var(--ptn-yellow);color:#111;border:3px solid #111;box-shadow:4px 4px 0 #111;font:900 13px var(--ptn-font);
-}
+
 @media (max-width:960px){
-  html.ptn-app.ptn-has-sidebar #app{margin-left:0;padding-top:64px}
+  html.ptn-app.ptn-has-sidebar #app{margin-left:0}
   #ptn-sidebar{transform:translateX(-102%);transition:transform .2s}
   html.ptn-open #ptn-sidebar{transform:none}
-  #ptn-toggle{display:block}
+  #ptn-burger{display:flex}
+  #ptn-header .ptn-act span{display:none}
 }
 CSS
 }
 
 theme_write_sidebar_js() {
   cat > "$THEME_PUB/sidebar.js" <<'JS'
-/* Neo Brutalism - sidebar + pewarnaan otomatis (tanpa build ulang frontend) */
+/* Neo Brutalism - header + sidebar baru, ikon Font Awesome, pewarnaan isi halaman (tanpa build ulang) */
 (function () {
   'use strict';
   if (window.__ptnTheme) { return; }
   window.__ptnTheme = true;
 
+  var CFG = window.__PTN || { brand: 'Pterodactyl', logo: '', login: true, app: true };
   var root = document.documentElement;
   var sigCache = '';
   var adminSeen = false;
@@ -350,6 +380,7 @@ theme_write_sidebar_js() {
     if (text != null) { e.textContent = text; }
     return e;
   }
+  function ic(cls) { var i = mk('i', cls); i.setAttribute('aria-hidden', 'true'); return i; }
   function go(href) {
     if (/^\/(admin|auth)(\/|$)/.test(href)) { location.href = href; return; }
     if (href === location.pathname) { return; }
@@ -364,29 +395,38 @@ theme_write_sidebar_js() {
     }).then(function () {}, function () {}).then(function () { location.href = '/auth/login'; });
   }
 
-  /* ------------------------------------------------ navigasi / sidebar */
-  function siteName() {
-    var l = document.getElementById('logo');
-    var t = l && l.textContent.trim();
-    return t || document.title.replace(/\s*[-|].*$/, '') || 'Panel';
+  /* ---------------------------------------------------------- brand */
+  function brandLink() {
+    var a = mk('a', 'ptn-logo');
+    a.href = '/';
+    if (CFG.logo) {
+      var im = mk('img'); im.src = CFG.logo; im.alt = ''; a.appendChild(im);
+    } else {
+      a.appendChild(ic('fa-solid fa-dragon'));
+    }
+    a.appendChild(mk('span', 'ptn-name', CFG.brand || 'Pterodactyl'));
+    return a;
   }
+
+  /* ------------------------------------------------ navigasi server */
+  var ICONS = {
+    '': 'fa-solid fa-terminal', files: 'fa-regular fa-folder-open', databases: 'fa-solid fa-database',
+    schedules: 'fa-regular fa-clock', users: 'fa-solid fa-users', backups: 'fa-regular fa-floppy-disk',
+    network: 'fa-solid fa-network-wired', startup: 'fa-solid fa-play', settings: 'fa-solid fa-gear',
+    activity: 'fa-solid fa-clock-rotate-left'
+  };
   function topBar() {
     var l = document.getElementById('logo');
     var bar = l && l.parentElement && l.parentElement.parentElement;
     if (!bar || (bar.innerText || '').length > 400 || bar.querySelector('input,textarea')) { return null; }
     return bar;
   }
-  function icon(href, base) {
-    var k = href === base ? '' : href.slice(base.length + 1).split('/')[0];
-    return ({ '': '🖥️', files: '📁', databases: '🗄️', schedules: '⏱️', users: '👥', backups: '💾',
-      network: '🌐', startup: '🚀', settings: '⚙️', activity: '📜' })[k] || '▪️';
-  }
   function serverNav() {
     var m = location.pathname.match(/^\/server\/([^\/]+)/);
     if (!m) { return { id: null, items: [], bar: null }; }
     var base = '/server/' + m[1], groups = [];
     [].forEach.call(document.querySelectorAll('a[href^="' + base + '"]'), function (a) {
-      if (a.closest('#ptn-sidebar')) { return; }
+      if (a.closest('#ptn-sidebar,#ptn-header')) { return; }
       var h = a.getAttribute('href');
       if (h !== base && h.indexOf(base + '/') !== 0) { return; }
       var g = null;
@@ -400,16 +440,17 @@ theme_write_sidebar_js() {
     var seen = {}, items = [];
     best.arr.forEach(function (a) {
       var h = a.getAttribute('href'), t = (a.textContent || '').trim();
-      if (t && !seen[h]) { seen[h] = 1; items.push({ href: h, label: t, icon: icon(h, base) }); }
+      var k = h === base ? '' : h.slice(base.length + 1).split('/')[0];
+      if (t && !seen[h]) { seen[h] = 1; items.push({ href: h, label: t, icon: ICONS[k] || 'fa-solid fa-circle' }); }
     });
     var bar = best.p.parentElement;
     if (!bar || (bar.innerText || '').length > 400 || bar.querySelector('input,textarea,table')) { bar = null; }
     return { id: m[1], items: items, bar: bar };
   }
   function addLink(parent, it) {
-    var a = mk('a', '', '');
+    var a = mk('a');
     a.href = it.href;
-    a.appendChild(mk('span', '', it.icon));
+    a.appendChild(ic(it.icon));
     a.appendChild(mk('span', '', it.label));
     a.addEventListener('click', function (e) {
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) { return; }
@@ -419,42 +460,61 @@ theme_write_sidebar_js() {
     });
     parent.appendChild(a);
   }
-  function build(name, admin, srv) {
+  function actLink(href, icon, label, admin) {
+    var a = mk('a', 'ptn-act');
+    a.href = href;
+    a.appendChild(ic(icon));
+    a.appendChild(mk('span', '', label));
+    a.addEventListener('click', function (e) {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1 || admin) { return; }
+      e.preventDefault();
+      go(href);
+    });
+    return a;
+  }
+  function buildHeader() {
+    var old = document.getElementById('ptn-header');
+    if (old) { old.remove(); }
+    var h = mk('header');
+    h.id = 'ptn-header';
+    var b = mk('button', 'ptn-act');
+    b.id = 'ptn-burger'; b.type = 'button';
+    b.appendChild(ic('fa-solid fa-bars'));
+    b.addEventListener('click', function () { root.classList.toggle('ptn-open'); });
+    h.appendChild(b);
+    h.appendChild(brandLink());
+    h.appendChild(mk('div', 'ptn-sp'));
+    h.appendChild(actLink('/account', 'fa-regular fa-circle-user', 'Account', false));
+    if (adminSeen) { h.appendChild(actLink('/admin', 'fa-solid fa-screwdriver-wrench', 'Admin', true)); }
+    var out = mk('button', 'ptn-act ptn-out');
+    out.type = 'button';
+    out.appendChild(ic('fa-solid fa-right-from-bracket'));
+    out.appendChild(mk('span', '', 'Logout'));
+    out.addEventListener('click', logout);
+    h.appendChild(out);
+    document.body.appendChild(h);
+  }
+  function buildSidebar(srv) {
     var old = document.getElementById('ptn-sidebar');
     if (old) { old.remove(); }
     var aside = mk('aside');
     aside.id = 'ptn-sidebar';
-    aside.appendChild(mk('div', 'ptn-brand', name));
     var nav = mk('nav');
     nav.appendChild(mk('div', 'ptn-label', 'Menu'));
     var main = [
-      { href: '/', label: 'Dashboard', icon: '🏠' },
-      { href: '/account', label: 'Account', icon: '👤' },
-      { href: '/account/api', label: 'API Credentials', icon: '🔑' },
-      { href: '/account/ssh', label: 'SSH Keys', icon: '🔐' }
+      { href: '/', label: 'Dashboard', icon: 'fa-solid fa-house' },
+      { href: '/account', label: 'Account', icon: 'fa-regular fa-user' },
+      { href: '/account/api', label: 'API Credentials', icon: 'fa-solid fa-key' },
+      { href: '/account/ssh', label: 'SSH Keys', icon: 'fa-solid fa-lock' }
     ];
-    if (admin) { main.push({ href: '/admin', label: 'Admin Panel', icon: '🛠️' }); }
+    if (adminSeen) { main.push({ href: '/admin', label: 'Admin Panel', icon: 'fa-solid fa-screwdriver-wrench' }); }
     main.forEach(function (it) { addLink(nav, it); });
     if (srv.items.length) {
       nav.appendChild(mk('div', 'ptn-label', 'Server'));
       srv.items.forEach(function (it) { addLink(nav, it); });
     }
     aside.appendChild(nav);
-    var foot = mk('div', 'ptn-foot');
-    var out = mk('button', '', '⏻  Logout');
-    out.type = 'button';
-    out.addEventListener('click', logout);
-    foot.appendChild(out);
-    aside.appendChild(foot);
     document.body.appendChild(aside);
-
-    if (!document.getElementById('ptn-toggle')) {
-      var t = mk('button', '', '☰ Menu');
-      t.id = 'ptn-toggle';
-      t.type = 'button';
-      t.addEventListener('click', function () { root.classList.toggle('ptn-open'); });
-      document.body.appendChild(t);
-    }
   }
   function markActive() {
     var links = document.querySelectorAll('#ptn-sidebar nav a'), best = null, bestLen = -1, p = location.pathname.replace(/\/+$/, '') || '/';
@@ -466,21 +526,36 @@ theme_write_sidebar_js() {
     });
     if (best) { best.classList.add('ptn-active'); }
   }
+  function removeShell() {
+    ['ptn-sidebar', 'ptn-header'].forEach(function (id) {
+      var e = document.getElementById(id);
+      if (e) { e.remove(); }
+    });
+    root.classList.remove('ptn-has-sidebar', 'ptn-open');
+  }
   function render() {
     syncMode();
-    var old = document.getElementById('ptn-sidebar');
     if (isAuth()) {
-      if (old) { old.remove(); }
-      var tg = document.getElementById('ptn-toggle');
-      if (tg) { tg.remove(); }
-      root.classList.remove('ptn-has-sidebar');
+      removeShell();
+      var ab = document.getElementById('ptn-authbrand');
+      if (CFG.login) {
+        if (!ab) {
+          ab = mk('div'); ab.id = 'ptn-authbrand';
+          ab.appendChild(brandLink());
+          document.body.appendChild(ab);
+        }
+      } else if (ab) { ab.remove(); }
       return;
     }
-    if (!document.getElementById('logo') && !old) { return; }
-    if (document.querySelector('a[href="/admin"]:not(#ptn-sidebar a)')) { adminSeen = true; }
-    var srv = serverNav(), name = siteName();
-    var sig = JSON.stringify([name, adminSeen, srv.id, srv.items]);
-    if (!old || sig !== sigCache) { build(name, adminSeen, srv); sigCache = sig; }
+    var ab2 = document.getElementById('ptn-authbrand');
+    if (ab2) { ab2.remove(); }
+    if (!CFG.app) { return; }
+    var hasShell = !!document.getElementById('ptn-sidebar');
+    if (!document.getElementById('logo') && !hasShell) { return; }
+    if (document.querySelector('a[href="/admin"]:not(#ptn-sidebar a):not(#ptn-header a)')) { adminSeen = true; }
+    var srv = serverNav();
+    var sig = JSON.stringify([adminSeen, srv.id, srv.items]);
+    if (!hasShell || sig !== sigCache) { buildHeader(); buildSidebar(srv); sigCache = sig; }
     var tb = topBar();
     if (tb) { tb.classList.add('ptn-hide'); }
     if (srv.bar) { srv.bar.classList.add('ptn-hide'); }
@@ -512,7 +587,7 @@ theme_write_sidebar_js() {
   function paint(el) {
     if (el.nodeType !== 1 || seen.has(el)) { return; }
     seen.add(el);
-    if (el.closest('svg,canvas,.xterm,#ptn-sidebar,#ptn-toggle,.ptn-keep,script,style,img,video,iframe')) { return; }
+    if (el.closest('svg,canvas,.xterm,#ptn-sidebar,#ptn-header,#ptn-authbrand,.ptn-keep,script,style,img,video,iframe')) { return; }
     var cs = getComputedStyle(el);
     var bg = parse(cs.backgroundColor);
     if (bg && bg.a > 0.95) {
@@ -532,7 +607,7 @@ theme_write_sidebar_js() {
   var queue = [], qi = 0, pending = false;
   function flush() {
     pending = false;
-    if (isAuth()) { queue = []; qi = 0; return; }
+    if (isAuth() || !CFG.app) { queue = []; qi = 0; return; }
     var n = 0;
     while (qi < queue.length && n < 400) { paint(queue[qi++]); n++; }
     if (qi < queue.length) { pending = true; requestAnimationFrame(flush); } else { queue = []; qi = 0; }
@@ -571,49 +646,65 @@ theme_write_sidebar_js() {
 JS
 }
 
+theme_write_admin_js() {
+  cat > "$THEME_PUB/admin.js" <<'JS'
+/* Neo Brutalism - header admin: logo + nama brand custom */
+(function () {
+  'use strict';
+  var C = window.__PTN || { brand: 'Pterodactyl', logo: '' };
+  function mk(t, c, x) { var e = document.createElement(t); if (c) { e.className = c; } if (x != null) { e.textContent = x; } return e; }
+  function run() {
+    var l = document.querySelector('.main-header .logo');
+    if (!l) { return; }
+    l.textContent = '';
+    l.href = '/admin';
+    var lg = mk('span', 'logo-lg ptn-logo'), mini = mk('span', 'logo-mini ptn-logo');
+    if (C.logo) {
+      [lg, mini].forEach(function (s) { var i = mk('img'); i.src = C.logo; i.alt = ''; s.appendChild(i); });
+    } else {
+      [lg, mini].forEach(function (s) { var i = mk('i', 'fa-solid fa-dragon'); s.appendChild(i); });
+    }
+    lg.appendChild(mk('span', 'ptn-name', C.brand || 'Pterodactyl'));
+    l.appendChild(lg);
+    l.appendChild(mini);
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', run); } else { run(); }
+})();
+JS
+}
+
 theme_write_admin() {
   cat > "$THEME_PUB/admin.css" <<'CSS'
 /* Neo Brutalism - panel admin (AdminLTE) */
 body.skin-blue,.skin-blue .wrapper,.skin-blue .content-wrapper,.skin-blue .right-side{
   background-color:var(--ptn-bg)!important;font-family:var(--ptn-font)!important;color:#111;
 }
-.skin-blue .content-wrapper{
-  background-image:radial-gradient(rgba(17,17,17,.12) 1.5px,transparent 1.5px);background-size:24px 24px;
-}
+.skin-blue .content-wrapper{background-image:radial-gradient(rgba(17,17,17,.12) 1.5px,transparent 1.5px);background-size:24px 24px}
 .skin-blue .main-header .logo{
-  background:#111!important;color:var(--ptn-yellow)!important;border-right:4px solid #111;
-  font-family:var(--ptn-font)!important;font-weight:900;text-transform:uppercase;letter-spacing:-.01em;
+  background:var(--ptn-yellow)!important;color:#111!important;border-right:4px solid #111;border-bottom:4px solid #111;
+  font-family:var(--ptn-font)!important;font-weight:900;text-transform:uppercase;letter-spacing:-.02em;
 }
+.skin-blue .main-header .logo .ptn-logo{display:inline-flex;align-items:center;gap:8px;justify-content:center;width:100%;line-height:50px}
+.skin-blue .main-header .logo .ptn-logo img{max-height:30px;width:auto}
 .skin-blue .main-header .navbar{background:var(--ptn-yellow)!important;border-bottom:4px solid #111}
 .skin-blue .main-header .navbar .nav>li>a,.skin-blue .main-header .navbar .sidebar-toggle{color:#111!important;font-weight:800}
 .skin-blue .main-header .navbar .nav>li>a:hover,.skin-blue .main-header .navbar .sidebar-toggle:hover{background:var(--ptn-pink)!important}
 .skin-blue .main-sidebar,.skin-blue .left-side{background:#fff!important;border-right:4px solid #111}
 .skin-blue .sidebar-menu>li.header{background:#111!important;color:var(--ptn-yellow)!important;font-weight:900;letter-spacing:.14em}
-.skin-blue .sidebar-menu>li>a{
-  color:#111!important;font-weight:800;text-transform:uppercase;font-size:12px;
-  border:3px solid transparent;margin:3px 10px;border-radius:0;
-}
-.skin-blue .sidebar-menu>li:hover>a,.skin-blue .sidebar-menu>li.active>a{
-  background:var(--ptn-pink)!important;color:#111!important;border:3px solid #111;box-shadow:4px 4px 0 #111;
-}
+.skin-blue .sidebar-menu>li>a{color:#111!important;font-weight:800;text-transform:uppercase;font-size:12px;border:3px solid transparent;margin:3px 10px;border-radius:0}
+.skin-blue .sidebar-menu>li:hover>a,.skin-blue .sidebar-menu>li.active>a{background:var(--ptn-pink)!important;color:#111!important;border:3px solid #111;box-shadow:4px 4px 0 #111}
 .skin-blue .sidebar-menu>li>.treeview-menu{background:var(--ptn-bg)!important;margin:0 10px;border:3px solid #111;border-top:0}
 .skin-blue .sidebar-menu .treeview-menu>li>a{color:#111!important;font-weight:700}
 .skin-blue .sidebar-menu .treeview-menu>li.active>a,.skin-blue .sidebar-menu .treeview-menu>li>a:hover{background:var(--ptn-yellow)!important;color:#111!important}
 .content-header>h1{font-weight:900;text-transform:uppercase;letter-spacing:-.02em}
 .content-header>h1>small{color:#111;font-weight:700}
 .content-header>.breadcrumb>li>a{color:#111}
-.box,.small-box,.info-box{
-  background:#fff!important;border:3px solid #111!important;border-top:3px solid #111!important;
-  border-radius:0!important;box-shadow:6px 6px 0 #111!important;
-}
+.box,.small-box,.info-box{background:#fff!important;border:3px solid #111!important;border-top:3px solid #111!important;border-radius:0!important;box-shadow:6px 6px 0 #111!important}
 .box-header{border-bottom:3px solid #111;background:var(--ptn-yellow)}
 .box-header .box-title{font-weight:900;text-transform:uppercase;color:#111}
 .box-footer{border-top:3px solid #111;background:var(--ptn-bg)}
 .small-box>.small-box-footer{background:#111!important;color:var(--ptn-yellow)!important;font-weight:800}
-.btn{
-  border:3px solid #111!important;border-radius:0!important;box-shadow:3px 3px 0 #111;font-weight:800;text-transform:uppercase;
-  transition:transform .08s,box-shadow .08s;
-}
+.btn{border:3px solid #111!important;border-radius:0!important;box-shadow:3px 3px 0 #111;font-weight:800;text-transform:uppercase;transition:transform .08s,box-shadow .08s}
 .btn:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111}
 .btn:active{transform:translate(2px,2px);box-shadow:none}
 .btn-primary{background:var(--ptn-blue)!important;color:#fff!important}
@@ -653,7 +744,9 @@ CSS
 
 theme_begin() {
   mkdir -p "$THEME_PUB" "$THEME_DIR"
+  [[ -f "$THEME_CFG" ]] || theme_set brand str "Pterodactyl"
   theme_write_base
+  theme_write_sidebar_js
   theme_write_partial
   theme_inject_all
 }
@@ -664,20 +757,45 @@ theme_end() {
   info "Selesai. Tekan Ctrl+F5 di browser untuk memuat tema baru."
 }
 
-install_theme_login() {
-  theme_begin; theme_write_login
-  theme_save true "$(theme_flag app)" "$(theme_flag admin)"
-  theme_end; info "Tampilan Login terpasang."
-}
-install_theme_app() {
-  theme_begin; theme_write_app; theme_write_sidebar_js
-  theme_save "$(theme_flag login)" true "$(theme_flag admin)"
-  theme_end; info "Tampilan Dashboard Server (Dashboard Utama + sidebar) terpasang."
-}
-install_theme_admin() {
-  theme_begin; theme_write_admin
-  theme_save "$(theme_flag login)" "$(theme_flag app)" true
-  theme_end; info "Tampilan Dashboard Admin terpasang."
+install_theme_login() { theme_begin; theme_write_login; theme_set login bool true; theme_end; info "Tampilan Login terpasang."; }
+install_theme_app()   { theme_begin; theme_write_app;   theme_set app bool true;   theme_end; info "Tampilan Dashboard Server (header + sidebar baru) terpasang."; }
+install_theme_admin() { theme_begin; theme_write_admin; theme_write_admin_js; theme_set admin bool true; theme_end; info "Tampilan Dashboard Admin terpasang."; }
+
+# Nama + logo header. Logo: URL http(s), path web (/xx.png) atau file lokal di VPS (disalin ke public/protect-theme).
+install_brand() {
+  mkdir -p "$THEME_PUB" "$THEME_DIR"
+  local name="${BRAND_NAME-}" logo="${BRAND_LOGO-}" cur_n cur_l ext
+  cur_n="$(theme_get brand Pterodactyl)"; cur_l="$(theme_get logo '')"
+  if [[ -z "${BRAND_NAME+x}" ]]; then
+    read -r -p "Nama header [Enter = $cur_n]: " name || true
+  fi
+  if [[ -z "${BRAND_LOGO+x}" ]]; then
+    read -r -p "Logo (URL / path file) [Enter = tetap${cur_l:+ ($cur_l)}, 'hapus' = ikon bawaan]: " logo || true
+  fi
+  name="${name//[[:cntrl:]]/}"; name="${name:0:40}"
+  [[ -n "$name" ]] || name="$cur_n"
+  theme_set brand str "$name"
+  if [[ "${logo,,}" == "hapus" ]]; then
+    rm -f "$THEME_PUB"/logo.* 2>/dev/null || true
+    theme_set logo str ""
+  elif [[ -n "$logo" ]]; then
+    if [[ "$logo" =~ ^https?://[A-Za-z0-9._~:/?#@!\&\(\)*+,\;=%-]+$ ]]; then
+      theme_set logo str "$logo"
+    elif [[ -f "$logo" ]]; then
+      ext="${logo##*.}"; ext="${ext,,}"
+      [[ "$ext" =~ ^(png|jpg|jpeg|svg|webp|gif|ico)$ ]] || die "Format logo harus png/jpg/jpeg/svg/webp/gif/ico."
+      rm -f "$THEME_PUB"/logo.* 2>/dev/null || true
+      cp "$logo" "$THEME_PUB/logo.$ext"
+      theme_set logo str "/protect-theme/logo.$ext"
+    elif [[ "$logo" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      theme_set logo str "$logo"
+    else
+      die "Logo tidak valid: gunakan URL http(s), path web (/logo.png), atau file lokal yang ada."
+    fi
+  fi
+  theme_write_partial
+  theme_end
+  info "Header: nama '$(theme_get brand)' logo '$(theme_get logo '(ikon bawaan)')'."
 }
 
 theme_menu() {
@@ -687,12 +805,14 @@ theme_menu() {
     echo " 1) Install Tampilan Login"
     echo " 2) Install Tampilan Dashboard Server (Dashboard Utama)"
     echo " 3) Install Tampilan Dashboard Admin"
+    echo " 4) Atur Logo & Nama Header"
     echo " 0) Selesai"
-    read -r -p "Pilih [0-3]: " t || true
+    read -r -p "Pilih [0-4]: " t || true
     case "${t:-0}" in
       1) install_theme_login ;;
       2) install_theme_app ;;
       3) install_theme_admin ;;
+      4) install_brand ;;
       *) break ;;
     esac
   done
@@ -701,11 +821,7 @@ theme_menu() {
 theme_uninstall() {
   [[ -f "$THEME_CFG" || -d "$THEME_PUB" ]] || die "Tema belum terpasang."
   local f
-  for f in "$THEME_USER_VIEW" "$THEME_ADMIN_VIEW"; do
-    if [[ -f "$f" ]]; then
-      perl -0pi -e 's/[ \t]*\@includeIf\("partials\.protect-theme"[^\n]*\n//g' "$f"
-    fi
-  done
+  for f in "$THEME_WRAPPER_VIEW" "$THEME_CORE_VIEW" "$THEME_ADMIN_VIEW"; do theme_strip "$f"; done
   rm -rf "$THEME_PUB" "$THEME_DIR" "$THEME_PARTIAL"
   post_steps
   info "Tema dihapus, tampilan bawaan panel dikembalikan."
@@ -716,15 +832,17 @@ if [[ "$ACTION" == "menu" ]]; then
   echo "========== Pterodactyl Protect =========="
   echo " 1) Install Protect"
   echo " 2) Uninstall Protect"
-  echo " 3) Install Theme   (1. Login, 2. Dashboard Server/Utama, 3. Dashboard Admin)"
+  echo " 3) Install Theme   (Login, Dashboard Server/Utama, Dashboard Admin, Logo & Nama)"
   echo " 4) Uninstall Theme"
+  echo " 5) Atur Logo & Nama Header"
   echo " 0) Exit"
-  read -r -p "Pilih [0-4]: " choice || true
+  read -r -p "Pilih [0-5]: " choice || true
   case "${choice:-0}" in
     1) ACTION="install" ;;
     2) ACTION="uninstall" ;;
     3) ACTION="theme" ;;
     4) ACTION="theme-uninstall" ;;
+    5) ACTION="theme-brand" ;;
     *) exit 0 ;;
   esac
 fi
@@ -733,8 +851,8 @@ case "$ACTION" in
   uninstall|2)       ACTION="uninstall" ;;
   theme|3)           ACTION="theme" ;;
   theme-uninstall|4) ACTION="theme-uninstall" ;;
-  theme-login|theme-app|theme-admin|theme-all) ;;
-  *) die "Pilihan tidak dikenal: $ACTION (pakai: install | uninstall | theme | theme-uninstall | theme-login | theme-app | theme-admin | theme-all)" ;;
+  theme-login|theme-app|theme-admin|theme-all|theme-brand) ;;
+  *) die "Pilihan tidak dikenal: $ACTION (pakai: install | uninstall | theme | theme-uninstall | theme-login | theme-app | theme-admin | theme-all | theme-brand)" ;;
 esac
 case "$ACTION" in
   uninstall)       uninstall_protect ;;
@@ -743,6 +861,7 @@ case "$ACTION" in
   theme-app)       install_theme_app; exit 0 ;;
   theme-admin)     install_theme_admin; exit 0 ;;
   theme-all)       install_theme_login; install_theme_app; install_theme_admin; exit 0 ;;
+  theme-brand)     install_brand; exit 0 ;;
   theme-uninstall) theme_uninstall; exit 0 ;;
 esac
 
@@ -761,155 +880,10 @@ if [[ -n "$SUPPORT_URL" && ! "$SUPPORT_URL" =~ $url_re ]]; then
   die "Link support tidak valid (harus diawali http:// atau https://)."
 fi
 
-# IP internal / private / loopback (172.x.x.x docker, 10.x, 192.168.x, 127.x, fc00::/7, dll)
-is_private_ip() {
-  local ip="${1,,}"
-  [[ "$ip" =~ ^(0\.|10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.) ]] && return 0
-  [[ "$ip" == "::1" || "$ip" == "::" || "$ip" =~ ^(fc|fd|fe80) ]] && return 0
-  return 1
-}
-
-canon_ip() { # bentuk baku IP (IPv6 compress/expand dianggap sama)
-  php -r '$b = @inet_pton($argv[1]); echo $b === false ? strtolower($argv[1]) : inet_ntop($b);' "$1"
-}
-
-# Semua IP global milik VPS ini + IP publik keluar (api.ipify.org)
-local_ips() {
-  {
-    ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true
-    echo
-    curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true
-    echo
-    curl -6fsS --max-time 5 https://api6.ipify.org 2>/dev/null || true
-    echo
-  } | grep -E '^[0-9a-fA-F:.]+$' | sort -u || true
-}
-
-# Host dari APP_URL di .env panel (tanpa skema/port)
-panel_host() {
-  [[ -f "$PANEL_DIR/.env" ]] || return 0
-  grep -E '^APP_URL=' "$PANEL_DIR/.env" | head -1 | cut -d= -f2- | tr -d "\"'" \
-    | sed -E 's#^https?://##; s#[/:].*$##' || true
-}
-
-# Ubah domain jadi IPv4 (A) / IPv6 (AAAA) lewat DNS publik (seperti check-host), bukan /etc/hosts.
-# Urutan: DNS-over-HTTPS Cloudflare -> dig @1.1.1.1 -> getent (cadangan terakhir).
-resolve_domain() { # host type(A|AAAA)
-  local host="$1" type="$2" out="" re
-  [[ "$type" == "A" ]] && re='^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || re='^[0-9a-fA-F:]*:[0-9a-fA-F:.]*$'
-  out="$(curl -fsS --max-time 6 -H 'accept: application/dns-json' \
-          "https://cloudflare-dns.com/dns-query?name=${host}&type=${type}" 2>/dev/null \
-        | grep -oE '"data":"[^"]+"' | cut -d'"' -f4 | grep -E "$re" || true)"
-  if [[ -z "$out" ]] && command -v dig >/dev/null; then
-    out="$(dig +short "$type" "$host" @1.1.1.1 2>/dev/null | grep -E "$re" || true)"
-  fi
-  if [[ -z "$out" ]]; then
-    if [[ "$type" == "A" ]]; then
-      out="$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | grep -E "$re" || true)"
-    else
-      out="$(getent ahostsv6 "$host" 2>/dev/null | awk '{print $1}' | grep -E "$re" || true)"
-    fi
-  fi
-  printf '%s\n' "$out" | sed '/^$/d' | sort -u
-}
-
-# Verifikasi sebelum ada file yang diubah. Install BERHENTI otomatis bila:
-#  1) IP yang dikirim bukan IP VPS ini, atau
-#  2) domain panel (APP_URL) tidak mengarah ke IP yang dikirim.
-# Lewati (tidak disarankan): SKIP_IP_CHECK=1 / SKIP_DOMAIN_CHECK=1
-verify_vps_ip() {
-  local ip="$1" want mine dom host type label x found=0
-  if [[ "${SKIP_IP_CHECK:-0}" == "1" ]]; then
-    warn "SKIP_IP_CHECK=1: pengecekan IP VPS dilewati."
-    return 0
-  fi
-  want="$(canon_ip "$ip")"
-
-  mine="$(local_ips)"
-  while IFS= read -r x; do
-    if [[ -n "$x" && "$(canon_ip "$x")" == "$want" ]]; then found=1; fi
-  done <<< "$mine"
-  if (( found == 0 )); then
-    warn "IP yang dikirim ($ip) BUKAN IP VPS ini."
-    warn "IP milik VPS ini: $(tr '\n' ' ' <<< "$mine")"
-    die "Install dihentikan otomatis. Kirim IP VPS panel yang benar."
-  fi
-  info "Cek IP VPS: $ip cocok dengan VPS ini."
-
-  if [[ "${SKIP_DOMAIN_CHECK:-0}" == "1" ]]; then
-    warn "SKIP_DOMAIN_CHECK=1: pengecekan domain dilewati."
-    return 0
-  fi
-  host="$(panel_host)"
-  if [[ -z "$host" || "$host" == "localhost" || "$host" =~ ^[0-9.]+$ || "$host" == "["* ]]; then
-    warn "APP_URL bukan domain (${host:-kosong}), pengecekan domain dilewati."
-    return 0
-  fi
-  if [[ "$ip" == *:* ]]; then type="AAAA"; label="IPv6"; else type="A"; label="IPv4"; fi
-  dom="$(resolve_domain "$host" "$type")"
-  if [[ -n "$dom" ]]; then
-    info "Domain panel $host -> $label: $(tr '\n' ' ' <<< "$dom")"
-  else
-    info "Domain panel $host -> $label: (tidak ada record $type)"
-  fi
-  if [[ -z "$dom" ]]; then
-    die "Domain $host tidak punya record $type. Arahkan domain ke $ip lalu ulangi. Install dihentikan."
-  fi
-  found=0
-  while IFS= read -r x; do
-    if [[ -n "$x" && "$(canon_ip "$x")" == "$want" ]]; then found=1; fi
-  done <<< "$dom"
-  if (( found == 0 )); then
-    warn "Domain panel $host mengarah ke $(tr '\n' ' ' <<< "$dom"), bukan $ip."
-    die "Install dihentikan otomatis. Arahkan domain ke $ip. (Domain di balik Cloudflare/proxy: SKIP_DOMAIN_CHECK=1)"
-  fi
-  info "Cek domain: $host -> $ip cocok."
-}
-
-# IP VPS panel = HANYA IP yang dikirim di sini. IP internal (172.x.x.x dari docker/Wings, dll)
-# TIDAK ikut dideteksi / didaftarkan. Enter = pakai IP publik hasil deteksi api.ipify.org.
-DEFAULT_IP="$(curl -4fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
-VPS_IP_INPUT="${VPS_IP:-}"
-if [[ -z "$VPS_IP_INPUT" ]]; then
-  read -r -p "Kirim IP VPS panel (IPv4/IPv6, boleh ipv4:port)${DEFAULT_IP:+ [Enter = $DEFAULT_IP]}: " VPS_IP_INPUT || true
-  VPS_IP_INPUT="${VPS_IP_INPUT:-$DEFAULT_IP}"
-fi
-VPS_IP="$(normalize_ip "$VPS_IP_INPUT")" || die "IP VPS tidak valid: '$VPS_IP_INPUT'"
-if is_private_ip "$VPS_IP"; then
-  die "IP $VPS_IP adalah IP internal/private (bukan IP VPS publik). Kirim IP publik VPS panel."
-fi
-verify_vps_ip "$VPS_IP"
-PANEL_IPS="$VPS_IP"
-info "IP VPS panel terdaftar (satu-satunya IP yang boleh memakai Application API): $VPS_IP"
-
-# IP tambahan (opsional, TIDAK ditanyakan): ALLOWED_IPS="1.2.3.4,5.6.7.8:5555"
-CLEAN_IPS=()
-IFS=', ' read -r -a _ips <<< "${ALLOWED_IPS:-}"
-for raw in "${_ips[@]:-}"; do
-  [[ -z "$raw" ]] && continue
-  # Subnet CIDR (mis. 172.18.0.0/16 untuk bot di container Docker pada VPS yang sama)
-  if [[ "$raw" =~ ^([0-9a-fA-F:.]+)/([0-9]{1,3})$ ]]; then
-    cidr_ip="${BASH_REMATCH[1]}"; cidr_len="${BASH_REMATCH[2]}"
-    nip="$(normalize_ip "$cidr_ip")" || { warn "Subnet '$raw' tidak valid, dilewati."; continue; }
-    (( cidr_len >= 1 )) || { warn "Subnet '$raw' (/0) tidak diizinkan, dilewati."; continue; }
-    CLEAN_IPS+=("$nip/$cidr_len"); continue
-  fi
-  nip="$(normalize_ip "$raw")" || { warn "IP '$raw' tidak valid, dilewati."; continue; }
-  grep -qxF "$nip" <<< "$PANEL_IPS" && continue
-  CLEAN_IPS+=("$nip")
-done
-
 mkdir -p "$PROTECT_DIR" "$BK"
-# IP tambahan yang sudah ada tidak dihapus, hanya digabung
-{ cat "$PROTECT_DIR/allowed_ips.txt" 2>/dev/null || true; printf '%s\n' "${CLEAN_IPS[@]:-}"; } \
-  | sed '/^$/d' | sort -u > "$PROTECT_DIR/allowed_ips.txt.new"
-mv "$PROTECT_DIR/allowed_ips.txt.new" "$PROTECT_DIR/allowed_ips.txt"
-printf '%s\n' "$PANEL_IPS"                         > "$PROTECT_DIR/panel_ips.txt"
-printf '{"support_url":"%s"}\n' "$SUPPORT_URL"      > "$PROTECT_DIR/config.json"
-
-# Versi lama memakai local_networks.txt (menganggap semua container/proxy 172.x sebagai VPS).
-# Itu membuka kunci IP untuk semua request yang lewat proxy, jadi file ini dihapus dan tidak dipakai lagi.
-rm -f "$PROTECT_DIR/local_networks.txt"
+printf '{"support_url":"%s"}\n' "$SUPPORT_URL" > "$PROTECT_DIR/config.json"
+# Sisa fitur whitelist IP versi lama dibersihkan (tidak dipakai lagi)
+rm -f "$PROTECT_DIR"/{panel_ips.txt,allowed_ips.txt,trusted_proxies.txt,real_ip_header.txt,disable_ip_lock,local_networks.txt}
 
 # ------------------------------------------------------ 1. kelas proteksi ---
 info "Membuat app/Http/Middleware/Protect/PanelProtect.php"
@@ -956,7 +930,6 @@ class PanelProtect
             self::deny($request, 'Halaman ini hanya bisa diakses oleh owner panel.');
         }
 
-        // Halaman server di admin (daftar, detail, edit) tetap bisa dibuka.
         // Yang ditolak hanya menghapus server milik orang lain.
         if ($section === 'servers' && ($seg[2] ?? '') === 'view' && isset($seg[3]) && ctype_digit($seg[3])
             && ($seg[4] ?? '') === 'delete') {
@@ -979,11 +952,7 @@ class PanelProtect
         }
     }
 
-    /**
-     * Dashboard server (/api/client/servers/{server}/...): panel secara bawaan memberi semua
-     * root_admin akses ke semua server. Di sini hanya owner panel (id 1), pemilik server,
-     * dan subuser yang sah yang boleh masuk.
-     */
+    /** Dashboard server: hanya owner panel (id 1), pemilik server, dan subuser sah. */
     public static function clientServer(Request $request): void
     {
         $user = $request->user();
@@ -1007,7 +976,7 @@ class PanelProtect
         self::deny($request, 'Server ini hanya bisa dibuka oleh owner panel dan pemilik server.');
     }
 
-    /** Daftar server di dashboard: mode "lihat semua server" (admin / admin-all) hanya untuk id 1. */
+    /** Daftar server di dashboard: mode "lihat semua server" hanya untuk id 1. */
     public static function clientList(Request $request): void
     {
         $user = $request->user();
@@ -1038,38 +1007,12 @@ class PanelProtect
         }
     }
 
-    /** Dipanggil dari AuthenticateApplicationUser (semua /api/application). */
+    /** Dipanggil dari AuthenticateApplicationUser (semua /api/application). Tanpa batas IP. */
     public static function api(Request $request): void
     {
-        // Middleware ini bisa ikut jalan di Client API; proteksi hanya untuk /api/application.
         $path = $request->segments();
         if (($path[0] ?? '') !== 'api' || ($path[1] ?? '') !== 'application') {
             return;
-        }
-
-        $ip = self::clientIp($request);
-
-        // Application API hanya bisa dipakai dari IP VPS yang dikirim saat install (panel_ips.txt)
-        // + IP tambahan opsional (allowed_ips.txt). Alamat internal (172.x.x.x docker, SERVER_ADDR,
-        // localhost) TIDAK otomatis diizinkan. Request dari server lain ditolak.
-        // Saklar darurat: buat file storage/protect/disable_ip_lock untuk mematikan batas ini.
-        if (!is_file(storage_path('protect/disable_ip_lock'))) {
-            $allowed = array_merge(self::lines('panel_ips.txt'), self::lines('allowed_ips.txt'));
-            if (!self::matches($ip, $allowed)) {
-                $hint = '';
-                if (self::isPrivate($ip)) {
-                    $peer = self::norm((string) $request->server('REMOTE_ADDR'));
-                    $hdr = self::realIpHeader();
-                    $hint = self::isTrustedProxy($peer)
-                        ? ' ' . $peer . ' dipercaya sebagai proxy tetapi tidak mengirim header ' . $hdr . '.'
-                            . ' Jika itu proxy: atur agar mengirim header tsb.'
-                            . ' Jika itu bot/container (bukan proxy): hapus dari trusted_proxies.txt dan tambahkan ke allowed_ips.txt.'
-                        : ' Sumber ' . $peer . ' belum diizinkan.'
-                            . ' Jika itu proxy: tambahkan ke storage/protect/trusted_proxies.txt.'
-                            . ' Jika itu bot/container: tambahkan ke storage/protect/allowed_ips.txt.';
-                }
-                self::deny($request, 'Application API hanya bisa dipakai dari VPS panel (IP terdeteksi: ' . $ip . ').' . $hint);
-            }
         }
 
         // Pemilik API key harus admin panel / owner.
@@ -1086,14 +1029,11 @@ class PanelProtect
             return;
         }
 
-        // Admin biasa: semua endpoint API tetap terbuka (users, servers, nodes, include=servers, dll).
-        // Satu-satunya batasan: akun owner (id 1) tidak boleh diedit / dihapus.
         $seg = $request->segments(); // [api, application, section, id, ...]
         $section = $seg[2] ?? '';
         $target = $seg[3] ?? null;
         $method = strtoupper($request->method());
 
-        // Create / ubah user lewat API: role admin (root_admin) hanya boleh dibuat oleh owner (id 1).
         if ($section === 'users' && in_array($method, ['POST', 'PATCH', 'PUT'], true)
             && $request->boolean('root_admin')) {
             self::deny($request, 'Hanya owner panel yang bisa membuat atau menjadikan user admin.');
@@ -1104,143 +1044,11 @@ class PanelProtect
         }
     }
 
-    /** True jika IP internal / private / loopback / reserved (mis. 172.x.x.x, 10.x, 127.x, fc00::/7). */
-    private static function isPrivate(string $ip): bool
-    {
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
-    }
-
-    /** Rapikan IP: buang port & kurung, ::ffff:1.2.3.4 jadi IPv4, IPv6 jadi bentuk baku. */
-    private static function norm(string $ip): string
-    {
-        $ip = strtolower(trim($ip));
-        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $ip, $m)) {
-            $ip = $m[1];
-        } elseif (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $ip, $m)) {
-            $ip = $m[1];
-        }
-        if (preg_match('/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/', $ip, $m)) {
-            $ip = $m[1];
-        }
-        $bin = @inet_pton($ip);
-
-        return $bin === false ? $ip : (string) inet_ntop($bin);
-    }
-
-    /** Cocokkan IP dengan daftar: IP tunggal atau subnet CIDR (mis. 172.18.0.0/16, 2001:db8::/32). */
-    private static function matches(string $ip, array $list): bool
-    {
-        $bin = @inet_pton($ip);
-        if ($bin === false) {
-            return false;
-        }
-
-        foreach ($list as $entry) {
-            $entry = trim((string) $entry);
-            if ($entry === '') {
-                continue;
-            }
-            if (strpos($entry, '/') === false) {
-                if (self::norm($entry) === $ip) {
-                    return true;
-                }
-                continue;
-            }
-
-            [$net, $bits] = explode('/', $entry, 2);
-            $nb = @inet_pton(self::norm($net));
-            // /0 sengaja diabaikan (akan mengizinkan semua IP).
-            if ($nb === false || strlen($nb) !== strlen($bin) || !ctype_digit($bits) || (int) $bits === 0) {
-                continue;
-            }
-            $bits = (int) $bits;
-            if ($bits > strlen($nb) * 8) {
-                continue;
-            }
-            $bytes = intdiv($bits, 8);
-            $rem = $bits % 8;
-            if ($bytes > 0 && substr($bin, 0, $bytes) !== substr($nb, 0, $bytes)) {
-                continue;
-            }
-            if ($rem === 0) {
-                return true;
-            }
-            $mask = (0xFF << (8 - $rem)) & 0xFF;
-            if ((ord($bin[$bytes]) & $mask) === (ord($nb[$bytes]) & $mask)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * IP asli pengirim. Jika IP yang terbaca masih internal (mis. 172.x.x.x) karena ada proxy/tunnel
-     * lokal, ambil IP asli dari header proxy. Header HANYA dipercaya bila koneksi langsung datang
-     * dari proxy tepercaya: localhost atau IP di storage/protect/trusted_proxies.txt (satu per baris).
-     */
-    private static function clientIp(Request $request): string
-    {
-        $ip = self::norm((string) $request->ip());
-        if (!self::isPrivate($ip)) {
-            return $ip;
-        }
-
-        $peer = self::norm((string) $request->server('REMOTE_ADDR'));
-        if (!self::isTrustedProxy($peer)) {
-            return $ip;
-        }
-
-        // Hanya SATU header yang dibaca (default X-Forwarded-For; ganti lewat real_ip_header.txt, mis.
-        // CF-Connecting-IP). Dibaca dari kanan: entri paling kanan ditambahkan proxy kita sendiri,
-        // entri di kirinya bisa dipalsukan klien. Hop proxy internal / tepercaya dilewati.
-        $cands = array_reverse(explode(',', (string) $request->header(self::realIpHeader())));
-        foreach ($cands as $c) {
-            $c = self::norm($c);
-            if ($c === '' || self::isPrivate($c) || self::isTrustedProxy($c)) {
-                continue;
-            }
-
-            return $c;
-        }
-
-        return $ip;
-    }
-
-    /** Proxy tepercaya: localhost + isi storage/protect/trusted_proxies.txt (IP atau CIDR, satu per baris). */
-    private static function isTrustedProxy(string $ip): bool
-    {
-        return self::matches($ip, array_merge(['127.0.0.1', '::1'], self::lines('trusted_proxies.txt')));
-    }
-
-    /** Nama header berisi IP asli dari proxy. Default X-Forwarded-For; ubah lewat storage/protect/real_ip_header.txt. */
-    private static function realIpHeader(): string
-    {
-        $h = self::lines('real_ip_header.txt')[0] ?? '';
-
-        return preg_match('/^[a-z0-9-]{1,64}$/', $h) ? $h : 'x-forwarded-for';
-    }
-
-    private static function lines(string $file): array
-    {
-        $path = storage_path('protect/' . $file);
-        if (!is_readable($path)) {
-            return [];
-        }
-        $rows = file($path, FILE_IGNORE_NEW_LINES) ?: [];
-
-        return array_values(array_filter(array_map(fn ($l) => strtolower(trim($l)), $rows), fn ($l) => $l !== '' && $l[0] !== '#'));
-    }
-
     private static function deny(Request $request, string $message): void
     {
         Log::warning('[protect] ' . $message, [
             'user' => optional($request->user())->id,
             'ip' => $request->ip(),
-            'peer' => $request->server('REMOTE_ADDR'),
-            'xff' => $request->header('X-Forwarded-For'),
-            'x_real_ip' => $request->header('X-Real-IP'),
-            'cf_ip' => $request->header('CF-Connecting-IP'),
             'method' => $request->method(),
             'path' => $request->path(),
         ]);
@@ -1286,7 +1094,6 @@ if [[ -z "$API_MW" ]]; then
 fi
 patch_handle_start "$API_MW" '\Pterodactyl\Http\Middleware\Protect\PanelProtect::api($request);'
 
-# Dashboard server (client area): hanya id 1, pemilik server, dan subuser
 PATCHED_PHP=()
 patch_optional() { # path-relatif, php-call, label
   local f="$PANEL_DIR/$1"
@@ -1309,8 +1116,6 @@ else
   warn "Tidak bisa memastikan daftar key di /admin/api dibatasi per admin, cek $(rel_of "$KEYREPO")"
 fi
 
-# Tabel "Credentials" di /admin/api: tampilkan hanya key milik admin yang sedang login
-# (berlaku untuk semua admin, termasuk id 1), apa pun isi query bawaan panel.
 KEYVIEW="$PANEL_DIR/resources/views/admin/api/index.blade.php"
 if [[ -f "$KEYVIEW" ]]; then
   if grep -q 'where("user_id", Auth::id())' "$KEYVIEW"; then
@@ -1354,18 +1159,17 @@ write_file "$PANEL_DIR/resources/views/partials/protect-welcome.blade.php" <<'BL
 
     function show() {
         var box = document.createElement('div');
-        box.style.cssText = 'position:fixed;top:16px;right:16px;z-index:99999;max-width:340px;padding:14px 38px 14px 16px;'
-            + 'border-radius:12px;background:#1f2937;color:#f9fafb;font:14px/1.5 system-ui,sans-serif;'
-            + 'box-shadow:0 10px 30px rgba(0,0,0,.35);border-left:4px solid #38bdf8;'
+        box.style.cssText = 'position:fixed;top:78px;right:16px;z-index:99999;max-width:340px;padding:14px 38px 14px 16px;'
+            + 'background:#FFD60A;color:#111;font:600 14px/1.5 "Space Grotesk",system-ui,sans-serif;'
+            + 'border:3px solid #111;box-shadow:6px 6px 0 #111;'
             + 'transition:opacity .4s,transform .4s;opacity:0;transform:translateY(-8px)';
 
         var title = document.createElement('div');
-        title.style.cssText = 'font-weight:600;margin-bottom:4px';
-        title.textContent = 'Selamat datang 👋 ' + name;
+        title.style.cssText = 'font-weight:900;margin-bottom:4px;text-transform:uppercase';
+        title.textContent = 'Selamat datang, ' + name;
         box.appendChild(title);
 
         var text = document.createElement('div');
-        text.style.opacity = '.85';
         text.textContent = 'Butuh bantuan? Hubungi tim support kami.';
         box.appendChild(text);
 
@@ -1373,14 +1177,14 @@ write_file "$PANEL_DIR/resources/views/partials/protect-welcome.blade.php" <<'BL
             var a = document.createElement('a');
             a.href = support; a.target = '_blank'; a.rel = 'noopener';
             a.textContent = 'Contact Support';
-            a.style.cssText = 'display:inline-block;margin-top:8px;padding:5px 12px;border-radius:8px;'
-                + 'background:#38bdf8;color:#0b1220;font-weight:600;text-decoration:none';
+            a.style.cssText = 'display:inline-block;margin-top:8px;padding:5px 12px;background:#111;color:#FFD60A;'
+                + 'border:3px solid #111;font-weight:800;text-decoration:none;text-transform:uppercase;font-size:12px';
             box.appendChild(a);
         }
 
         var x = document.createElement('button');
         x.type = 'button'; x.textContent = '×';
-        x.style.cssText = 'position:absolute;top:6px;right:10px;background:none;border:0;color:#9ca3af;font-size:20px;cursor:pointer';
+        x.style.cssText = 'position:absolute;top:4px;right:10px;background:none;border:0;color:#111;font-size:22px;font-weight:900;cursor:pointer';
         function close() { box.style.opacity = '0'; setTimeout(function () { box.remove(); }, 400); }
         x.onclick = close;
         box.appendChild(x);
@@ -1405,11 +1209,9 @@ inject_before_body() { # file, area (user|admin)
   if grep -q 'protect-welcome' "$f"; then info "Patch ($area): $(rel_of "$f")"; return 0; fi
   warn "Tag </body> tidak ditemukan di $(rel_of "$f")"; return 1
 }
-# Dashboard user (React app) -> fallback ke wrapper kalau core tidak punya </body>
-inject_before_body "$PANEL_DIR/resources/views/templates/base/core.blade.php" user \
-  || inject_before_body "$PANEL_DIR/resources/views/templates/wrapper.blade.php" user || true
-# Area admin
-inject_before_body "$PANEL_DIR/resources/views/layouts/admin.blade.php" admin || true
+inject_before_body "$THEME_WRAPPER_VIEW" user \
+  || inject_before_body "$THEME_CORE_VIEW" user || true
+inject_before_body "$THEME_ADMIN_VIEW" admin || true
 
 # ----------------------------------------------- 5. halaman error + tombol back ---
 info "Membuat halaman error (403, 404, 419, 429, 500, 503)"
@@ -1428,21 +1230,17 @@ write_file "$PANEL_DIR/resources/views/errors/_protect.blade.php" <<'BLADE'
     <style>
         *{box-sizing:border-box}
         body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
-             background:radial-gradient(circle at 20% 20%,#1e293b,#0b1220 70%);color:#e5e7eb;
-             font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-        .card{width:100%;max-width:460px;text-align:center;padding:36px 28px;border-radius:20px;
-              background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);
-              box-shadow:0 20px 60px rgba(0,0,0,.45)}
-        .code{font-size:84px;font-weight:800;line-height:1;letter-spacing:-2px;
-              background:linear-gradient(135deg,#38bdf8,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
-        h1{font-size:22px;margin:14px 0 8px}
-        p{margin:0 0 22px;color:#9ca3af;line-height:1.6;font-size:15px}
-        .actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
-        .btn{appearance:none;border:0;cursor:pointer;text-decoration:none;font:600 14px system-ui,sans-serif;
-             padding:11px 18px;border-radius:12px;transition:transform .15s,opacity .15s}
-        .btn:hover{transform:translateY(-1px);opacity:.92}
-        .primary{background:linear-gradient(135deg,#38bdf8,#818cf8);color:#0b1220}
-        .ghost{background:rgba(255,255,255,.08);color:#e5e7eb}
+             background:#FFF4D6 radial-gradient(rgba(17,17,17,.14) 1.5px,transparent 1.5px) 0 0/24px 24px;color:#111;
+             font-family:"Space Grotesk",system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+        .card{width:100%;max-width:460px;text-align:center;padding:36px 28px;background:#fff;border:4px solid #111;box-shadow:10px 10px 0 #111}
+        .code{display:inline-block;font-size:84px;font-weight:900;line-height:1;letter-spacing:-2px;padding:6px 18px;background:#FFD60A;border:4px solid #111}
+        h1{font-size:22px;margin:18px 0 8px;text-transform:uppercase;font-weight:900}
+        p{margin:0 0 22px;line-height:1.6;font-size:15px;font-weight:500}
+        .actions{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+        .btn{appearance:none;cursor:pointer;text-decoration:none;font:800 14px system-ui,sans-serif;text-transform:uppercase;
+             padding:11px 18px;border:3px solid #111;box-shadow:4px 4px 0 #111;color:#111;background:#fff;transition:transform .08s,box-shadow .08s}
+        .btn:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111}
+        .primary{background:#FF6B9D}
     </style>
 </head>
 <body>
@@ -1453,9 +1251,9 @@ write_file "$PANEL_DIR/resources/views/errors/_protect.blade.php" <<'BLADE'
         <div class="actions">
             <button class="btn primary" type="button"
                 onclick="if (history.length > 1) { history.back(); } else { location.href = '/'; }">&larr; Kembali</button>
-            <a class="btn ghost" href="/">Beranda</a>
+            <a class="btn" href="/">Beranda</a>
             @if (preg_match('#^https?://#i', $__ptSupport))
-                <a class="btn ghost" href="{{ $__ptSupport }}" target="_blank" rel="noopener">Contact Support</a>
+                <a class="btn" href="{{ $__ptSupport }}" target="_blank" rel="noopener">Contact Support</a>
             @endif
         </div>
     </div>
@@ -1501,18 +1299,12 @@ cat <<EOF
 
 ${c_grn}Selesai.${c_off}
   - Owner penuh akses : user ID 1
-  - Application API   : hanya dari IP VPS yang dikirim: $VPS_IP (daftar: $PROTECT_DIR/panel_ips.txt)
-                        IP internal (172.x.x.x) TIDAK otomatis diizinkan; IP asli dibaca dari header proxy.
-  - Proxy tepercaya   : $PROTECT_DIR/trusted_proxies.txt  (IP/CIDR proxy yang header IP aslinya dipercaya,
-                        mis. 172.18.0.2; proxy harus mengirim X-Forwarded-For)
-  - Header IP asli    : $PROTECT_DIR/real_ip_header.txt  (opsional, default x-forwarded-for; mis. cf-connecting-ip)
-  - Matikan batas IP  : touch $PROTECT_DIR/disable_ip_lock  (hapus file untuk menyalakan lagi)
+  - Application API   : tanpa batas IP; hanya admin panel yang boleh memakai key
   - Role admin        : hanya user ID 1 yang bisa membuat / menjadikan user admin
-  - IP tambahan       : $PROTECT_DIR/allowed_ips.txt  (opsional, satu IP atau subnet CIDR per baris,
-                        mis. 172.18.0.2 atau 172.18.0.0/16 untuk bot di container; langsung berlaku)
   - Support URL       : $PROTECT_DIR/config.json
   - Log penolakan     : storage/logs/laravel-*.log  (cari "[protect]")
-  - Batalkan          : bash $0 uninstall  (wajib isi IP VPS)
+  - Atur logo & nama  : bash $0 theme-brand
+  - Batalkan          : bash $0 uninstall  (tanpa input IP)
 
 Catatan: setelah update panel (upgrade), jalankan installer ini lagi.
 EOF
