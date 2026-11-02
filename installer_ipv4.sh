@@ -218,6 +218,7 @@ theme_write_base() {
 }
 ::selection{background:var(--ptn-yellow);color:#111}
 .ptn-logo img{display:block;max-height:34px;width:auto}
+.ptn-logo .ptn-name{min-width:0;overflow:hidden;text-overflow:ellipsis}
 CSS
 }
 
@@ -287,13 +288,31 @@ html.ptn-app h1,html.ptn-app h2,html.ptn-app h3{font-weight:900;text-transform:u
 html.ptn-app .ptn-s0{background:transparent!important}
 html.ptn-app .ptn-s1{background:#fff!important;border:3px solid #111!important;box-shadow:5px 5px 0 #111!important;border-radius:0!important}
 html.ptn-app .ptn-s2{background:var(--ptn-bg)!important;border:2px solid #111!important;border-radius:0!important;box-shadow:none!important}
-html.ptn-app .ptn-accent{border:3px solid #111!important;box-shadow:3px 3px 0 #111!important;border-radius:0!important;filter:saturate(1.35)}
-html.ptn-app .ptn-t{color:#111!important}
+html.ptn-app .ptn-c{border:3px solid #111!important;box-shadow:3px 3px 0 #111!important;border-radius:0!important;font-weight:800;color:#111!important}
+html.ptn-app .ptn-c-blue{background:var(--ptn-blue)!important}
+html.ptn-app .ptn-c-pink{background:var(--ptn-pink)!important}
+html.ptn-app .ptn-c-green{background:var(--ptn-green)!important}
+html.ptn-app .ptn-c-orange{background:var(--ptn-orange)!important}
+html.ptn-app .ptn-c-yellow{background:var(--ptn-yellow)!important}
+html.ptn-app .ptn-dark{background:#111!important;border:3px solid #111!important;box-shadow:5px 5px 0 #111!important;border-radius:0!important}
+/* semua teks isi halaman jadi hitam (kecuali konsol / area gelap / svg) */
+html.ptn-app #app *:not(.ptn-dark):not(.ptn-dark *):not(svg *):not(.xterm *){color:#111!important}
+html.ptn-app #app .ptn-dark{color:#EDEDED!important}
+html.ptn-app ::placeholder{color:#555!important;opacity:1}
+/* tab navigasi (Account / API / SSH ...) */
+html.ptn-app #app a.active,html.ptn-app #app a[aria-current=page]{background:var(--ptn-yellow)!important;border-bottom:4px solid #111!important}
+html.ptn-app #app a[class*="Link"],html.ptn-app #app nav a{font-weight:800;text-transform:uppercase}
+/* scrollbar */
+html.ptn-app *{scrollbar-color:#111 var(--ptn-bg)}
+html.ptn-app ::-webkit-scrollbar{width:14px;height:14px;background:var(--ptn-bg)}
+html.ptn-app ::-webkit-scrollbar-thumb{background:#111;border:3px solid var(--ptn-bg);border-radius:0}
+html.ptn-app ::-webkit-scrollbar-track{background:var(--ptn-bg);border:2px solid #111;border-radius:0}
 html.ptn-app button.ptn-s1,html.ptn-app button.ptn-s2,html.ptn-app a.ptn-s1,html.ptn-app a.ptn-s2{background:#fff!important;box-shadow:3px 3px 0 #111!important;font-weight:800}
 html.ptn-app button.ptn-s1:hover,html.ptn-app button.ptn-s2:hover,html.ptn-app a.ptn-s1:hover,html.ptn-app a.ptn-s2:hover{background:var(--ptn-yellow)!important}
-html.ptn-app button.ptn-accent,html.ptn-app a.ptn-accent{font-weight:800;transition:transform .08s,box-shadow .08s}
-html.ptn-app button.ptn-accent:hover,html.ptn-app a.ptn-accent:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111!important}
-html.ptn-app button.ptn-accent:active{transform:translate(2px,2px);box-shadow:none!important}
+html.ptn-app button.ptn-c,html.ptn-app a.ptn-c{transition:transform .08s,box-shadow .08s;text-transform:uppercase}
+html.ptn-app button.ptn-c:hover,html.ptn-app a.ptn-c:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #111!important}
+html.ptn-app button.ptn-c:active{transform:translate(2px,2px);box-shadow:none!important}
+html.ptn-app button.ptn-s1,html.ptn-app button.ptn-s2{text-transform:uppercase}
 html.ptn-app #app *{border-radius:0!important}
 html.ptn-app input:not([type=checkbox]):not([type=radio]),html.ptn-app select,html.ptn-app textarea{
   background:#fff!important;color:#111!important;border:3px solid #111!important;
@@ -312,7 +331,7 @@ html.ptn-app .xterm{border:3px solid #111}
 #ptn-header .ptn-logo{
   display:flex;align-items:center;gap:10px;padding:4px 14px;background:#fff;color:#111;text-decoration:none;
   border:3px solid #111;box-shadow:4px 4px 0 #111;font:900 22px var(--ptn-font);text-transform:uppercase;letter-spacing:-.02em;
-  max-width:55vw;overflow:hidden;white-space:nowrap;
+  min-width:0;flex:0 1 auto;overflow:hidden;white-space:nowrap;
 }
 #ptn-header .ptn-logo i{font-size:20px}
 #ptn-header .ptn-sp{flex:1}
@@ -324,7 +343,13 @@ html.ptn-app .xterm{border:3px solid #111}
 #ptn-header .ptn-act:hover{transform:translate(-2px,-2px);box-shadow:5px 5px 0 #111;background:var(--ptn-pink)}
 #ptn-header .ptn-act.ptn-out{background:#111;color:var(--ptn-yellow)}
 #ptn-header .ptn-act.ptn-out:hover{background:var(--ptn-pink);color:#111}
-#ptn-burger{display:none}
+#ptn-sidebar{transition:transform .2s}
+#ptn-sidebar a.ptn-logout{margin-top:auto;background:#111;color:var(--ptn-yellow)}
+#ptn-sidebar a.ptn-logout:hover{background:var(--ptn-pink);color:#111}
+@media (min-width:961px){
+  html.ptn-app.ptn-collapsed #app{margin-left:0!important}
+  html.ptn-collapsed #ptn-sidebar{transform:translateX(-102%)}
+}
 
 /* sidebar */
 #ptn-sidebar{
@@ -350,8 +375,10 @@ html.ptn-app .xterm{border:3px solid #111}
   html.ptn-app.ptn-has-sidebar #app{margin-left:0}
   #ptn-sidebar{transform:translateX(-102%);transition:transform .2s}
   html.ptn-open #ptn-sidebar{transform:none}
-  #ptn-burger{display:flex}
   #ptn-header .ptn-act span{display:none}
+  #ptn-header{gap:6px;padding:0 8px}
+  #ptn-header .ptn-act{padding:8px 10px}
+  #ptn-header .ptn-logo,#ptn-authbrand .ptn-logo{font-size:16px;padding:4px 10px;gap:6px}
 }
 CSS
 }
@@ -480,18 +507,12 @@ theme_write_sidebar_js() {
     var b = mk('button', 'ptn-act');
     b.id = 'ptn-burger'; b.type = 'button';
     b.appendChild(ic('fa-solid fa-bars'));
-    b.addEventListener('click', function () { root.classList.toggle('ptn-open'); });
+    b.addEventListener('click', function () {
+      /* desktop: sembunyikan/tampilkan sidebar; mobile: buka/tutup panel */
+      root.classList.toggle(innerWidth > 960 ? 'ptn-collapsed' : 'ptn-open');
+    });
     h.appendChild(b);
     h.appendChild(brandLink());
-    h.appendChild(mk('div', 'ptn-sp'));
-    h.appendChild(actLink('/account', 'fa-regular fa-circle-user', 'Account', false));
-    if (adminSeen) { h.appendChild(actLink('/admin', 'fa-solid fa-screwdriver-wrench', 'Admin', true)); }
-    var out = mk('button', 'ptn-act ptn-out');
-    out.type = 'button';
-    out.appendChild(ic('fa-solid fa-right-from-bracket'));
-    out.appendChild(mk('span', '', 'Logout'));
-    out.addEventListener('click', logout);
-    h.appendChild(out);
     document.body.appendChild(h);
   }
   function buildSidebar(srv) {
@@ -513,6 +534,12 @@ theme_write_sidebar_js() {
       nav.appendChild(mk('div', 'ptn-label', 'Server'));
       srv.items.forEach(function (it) { addLink(nav, it); });
     }
+    var out = mk('a', 'ptn-logout');
+    out.href = '/auth/logout';
+    out.appendChild(ic('fa-solid fa-right-from-bracket'));
+    out.appendChild(mk('span', '', 'Logout'));
+    out.addEventListener('click', function (e) { e.preventDefault(); logout(); });
+    nav.appendChild(out);
     aside.appendChild(nav);
     document.body.appendChild(aside);
   }
@@ -583,6 +610,13 @@ theme_write_sidebar_js() {
     var mx = Math.max(c.r, c.g, c.b), mn = Math.min(c.r, c.g, c.b);
     return mx === 0 ? 0 : (mx - mn) / mx;
   }
+  function hue(c) {
+    var mx = Math.max(c.r, c.g, c.b), mn = Math.min(c.r, c.g, c.b), d = mx - mn, h;
+    if (!d) { return 0; }
+    if (mx === c.r) { h = ((c.g - c.b) / d) % 6; } else if (mx === c.g) { h = (c.b - c.r) / d + 2; } else { h = (c.r - c.g) / d + 4; }
+    h *= 60;
+    return h < 0 ? h + 360 : h;
+  }
   var seen = new WeakSet();
   function paint(el) {
     if (el.nodeType !== 1 || seen.has(el)) { return; }
@@ -591,18 +625,21 @@ theme_write_sidebar_js() {
     var cs = getComputedStyle(el);
     var bg = parse(cs.backgroundColor);
     if (bg && bg.a > 0.95) {
-      var l = lum(bg), s = sat(bg);
-      if (s < 0.28 && l < 0.5) {
-        var r = el.getBoundingClientRect();
+      var l = lum(bg), s = sat(bg), r = el.getBoundingClientRect();
+      if (l < 0.03 && r.width > 200 && r.height > 120) {
+        /* area gelap besar (konsol) -> blok hitam */
+        el.classList.add('ptn-dark');
+      } else if (s >= 0.45 && l >= 0.03) {
+        /* warna jenuh (tombol/badge) -> palet Neo Brutalism sesuai hue */
+        var h = hue(bg);
+        el.classList.add('ptn-c', (h < 20 || h >= 290) ? 'ptn-c-pink' : h < 45 ? 'ptn-c-orange' : h < 70 ? 'ptn-c-yellow' : h < 170 ? 'ptn-c-green' : 'ptn-c-blue');
+      } else if (l < 0.5) {
+        /* abu / slate gelap (kartu, tab, tombol netral) -> putih / krem */
         var big = r.width > innerWidth * 0.85 && r.height > innerHeight * 0.5;
         var inner = el.parentElement && el.parentElement.closest('.ptn-s1');
         el.classList.add(big ? 'ptn-s0' : (inner ? 'ptn-s2' : 'ptn-s1'));
-      } else if (s >= 0.28) {
-        el.classList.add('ptn-accent');
       }
     }
-    var c = parse(cs.color);
-    if (c && lum(c) > 0.55 && !el.closest('.ptn-accent')) { el.classList.add('ptn-t'); }
   }
   var queue = [], qi = 0, pending = false;
   function flush() {
@@ -635,9 +672,21 @@ theme_write_sidebar_js() {
   function start() {
     syncMode();
     new MutationObserver(function (muts) {
-      muts.forEach(function (m) { [].forEach.call(m.addedNodes, enqueue); });
+      muts.forEach(function (m) {
+        if (m.type === 'attributes') {
+          /* React mengganti className -> kelas tema hilang, warnai ulang elemen itu */
+          var t = m.target;
+          if (t.nodeType === 1 && typeof t.className === 'string' && t.className.indexOf('ptn-') === -1) {
+            seen.delete(t);
+            queue.push(t);
+            if (!pending) { pending = true; requestAnimationFrame(flush); }
+          }
+          return;
+        }
+        [].forEach.call(m.addedNodes, enqueue);
+      });
       schedule();
-    }).observe(document.body, { childList: true, subtree: true });
+    }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
     enqueue(document.body);
     schedule();
   }
@@ -667,6 +716,20 @@ theme_write_admin_js() {
     lg.appendChild(mk('span', 'ptn-name', C.brand || 'Pterodactyl'));
     l.appendChild(lg);
     l.appendChild(mini);
+
+    /* menu akun di navbar kanan dipindah ke sidebar (elemen asli dipindah, handler logout tetap jalan) */
+    var menu = document.querySelector('.sidebar-menu');
+    var cm = document.querySelector('.main-header .navbar-custom-menu');
+    if (menu && cm) {
+      menu.appendChild(mk('li', 'header', 'AKUN'));
+      [].slice.call(cm.querySelectorAll('ul.navbar-nav > li')).forEach(function (li) {
+        var a = li.querySelector('a');
+        if (!a) { return; }
+        var t = a.getAttribute('title') || a.getAttribute('data-original-title') || '';
+        if (t) { a.appendChild(mk('span', '', ' ' + t)); }
+        menu.appendChild(li);
+      });
+    }
   }
   if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', run); } else { run(); }
 })();
@@ -698,6 +761,7 @@ body.skin-blue,.skin-blue .wrapper,.skin-blue .content-wrapper,.skin-blue .right
 .skin-blue .sidebar-menu .treeview-menu>li.active>a,.skin-blue .sidebar-menu .treeview-menu>li>a:hover{background:var(--ptn-yellow)!important;color:#111!important}
 .content-header>h1{font-weight:900;text-transform:uppercase;letter-spacing:-.02em}
 .content-header>h1>small{color:#111;font-weight:700}
+.main-header .navbar-custom-menu{display:none}
 .content-header>.breadcrumb>li>a{color:#111}
 .box,.small-box,.info-box{background:#fff!important;border:3px solid #111!important;border-top:3px solid #111!important;border-radius:0!important;box-shadow:6px 6px 0 #111!important}
 .box-header{border-bottom:3px solid #111;background:var(--ptn-yellow)}
