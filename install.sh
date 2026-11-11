@@ -338,6 +338,168 @@ install_jq() {
 }
 
 # ============================================================
+#  INSTALL THEME STELLAR (v1.15.2 / Node.js 22)
+#  Sumber zip: URL di bawah (kosongkan untuk input manual path/URL).
+# ============================================================
+STELLAR_ZIP_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/stellar.zip"
+STELLAR_REQUIRED_VER="1.15.2"
+
+version_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+
+panel_version() {
+  grep -oP "'version'\s*=>\s*'\K[^']+" "$PANEL_DIR/config/app.php" 2>/dev/null | head -n1
+}
+
+upgrade_panel_official() {
+  info_msg "Upgrade panel ke rilis resmi terbaru (panel.tar.gz)..."
+  cd "$PANEL_DIR" || return 1
+  $SUDO php artisan down
+  $SUDO curl -fL https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz -o /tmp/panel.tar.gz || { $SUDO php artisan up; return 1; }
+  $SUDO tar -xzf /tmp/panel.tar.gz -C "$PANEL_DIR" || { $SUDO php artisan up; return 1; }
+  $SUDO rm -f /tmp/panel.tar.gz
+  $SUDO chmod -R 755 storage/* bootstrap/cache
+  $SUDO env COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction || { $SUDO php artisan up; return 1; }
+  clear_cache
+  $SUDO php artisan migrate --seed --force || { $SUDO php artisan up; return 1; }
+  $SUDO chown -R www-data:www-data "$PANEL_DIR"
+  $SUDO php artisan queue:restart
+  $SUDO php artisan up
+  ok_msg "Panel berhasil diupgrade ke $(panel_version)."
+}
+
+install_stellar() {
+  banner "INSTALL THEME STELLAR (Panel ${STELLAR_REQUIRED_VER})        "
+
+  # ---------- Cek panel ----------
+  if [ ! -f "$PANEL_DIR/artisan" ] || [ ! -f "$PANEL_DIR/routes/admin.php" ]; then
+    fail "Pterodactyl Panel tidak ditemukan di $PANEL_DIR."; pause_clear; return 1
+  fi
+  command -v unzip >/dev/null 2>&1 || $SUDO apt-get install -y unzip
+  command -v composer >/dev/null 2>&1 || { fail "composer tidak ditemukan."; pause_clear; return 1; }
+
+  # ---------- Cek versi panel (overlay butuh >= 1.15.2) ----------
+  local CUR_PANEL
+  CUR_PANEL="$(panel_version)"
+  info_msg "Versi panel terdeteksi: ${CUR_PANEL:-tidak diketahui}"
+  if [ -z "$CUR_PANEL" ] || ! version_ge "$CUR_PANEL" "$STELLAR_REQUIRED_VER"; then
+    warn_msg "Tema ini butuh Pterodactyl Panel >= ${STELLAR_REQUIRED_VER}."
+    echo -ne "${YELLOW}  Upgrade panel otomatis ke rilis resmi terbaru? [y/N] : ${NC}"
+    read -r UP_ANS
+    case "$UP_ANS" in
+      [Yy]*) upgrade_panel_official || { fail "Upgrade panel gagal. Install tema dibatalkan."; pause_clear; return 1; } ;;
+      *) fail "Dibatalkan. Upgrade panel dulu, lalu ulangi."; pause_clear; return 1 ;;
+    esac
+  fi
+
+  # ---------- Ambil zip tema ----------
+  local ST_ZIP="" ST_TMP="$USER_HOME/stellar-tmp" ST_DL="$USER_HOME/stellar-download.zip"
+  local ST_SRC_INPUT="$STELLAR_ZIP_URL"
+  if [ -z "$ST_SRC_INPUT" ]; then
+    for c in "$USER_HOME"/stellar*.zip "$PWD"/stellar*.zip; do
+      [ -f "$c" ] && { ST_SRC_INPUT="$c"; break; }
+    done
+    echo -e "${YELLOW}Lokasi zip Stellar (path file atau URL https://...)${NC}"
+    echo -ne "${YELLOW}  [default: ${ST_SRC_INPUT:-tidak ada}] ➜ ${NC}"
+    read -r ST_ANS
+    [ -n "$ST_ANS" ] && ST_SRC_INPUT="$ST_ANS"
+  fi
+  [ -z "$ST_SRC_INPUT" ] && { fail "Lokasi zip tidak diberikan."; pause_clear; return 1; }
+
+  case "$ST_SRC_INPUT" in
+    http://*|https://*)
+      info_msg "Mengunduh zip tema..."
+      rm -f "$ST_DL"
+      wget -q --show-progress "$ST_SRC_INPUT" -O "$ST_DL" || { fail "Gagal mengunduh zip."; rm -f "$ST_DL"; pause_clear; return 1; }
+      ST_ZIP="$ST_DL" ;;
+    *) ST_ZIP="$ST_SRC_INPUT" ;;
+  esac
+  if [ ! -s "$ST_ZIP" ] || ! unzip -tq "$ST_ZIP" >/dev/null 2>&1; then
+    fail "File zip tidak ada / tidak valid: $ST_ZIP"; rm -f "$ST_DL"; pause_clear; return 1
+  fi
+
+  # ---------- Ekstrak & cari folder overlay "pterodactyl" ----------
+  rm -rf "$ST_TMP"; mkdir -p "$ST_TMP"
+  unzip -oq "$ST_ZIP" -d "$ST_TMP" || { fail "Gagal mengekstrak zip."; rm -rf "$ST_TMP"; pause_clear; return 1; }
+
+  local ST_SRC=""
+  while IFS= read -r d; do
+    if [ -d "$d/resources/scripts" ] && [ -f "$d/package.json" ]; then ST_SRC="$d"; break; fi
+  done < <(find "$ST_TMP" -type d -name pterodactyl)
+  if [ -z "$ST_SRC" ]; then
+    fail "Struktur zip tidak valid (folder 'pterodactyl/resources/scripts' + package.json tidak ditemukan)."
+    rm -rf "$ST_TMP"; pause_clear; return 1
+  fi
+  for REQ in "resources/views/templates/wrapper.blade.php" \
+             "resources/scripts/routers/ServerRouter.tsx" \
+             "app/Http/Controllers/Admin/Theme/ThemeController.php" \
+             "database/migrations/2021_12_06_134416_create_theme_table.php"; do
+    [ -f "$ST_SRC/$REQ" ] || { fail "File tema hilang di zip: $REQ"; rm -rf "$ST_TMP"; pause_clear; return 1; }
+  done
+
+  # ---------- Backup ----------
+  local ST_BACKUP="$USER_HOME/panel-backup-stellar-$(date +%Y%m%d-%H%M%S).tar.gz"
+  info_msg "Membuat backup panel (tanpa node_modules/vendor)..."
+  if ! $SUDO tar -czf "$ST_BACKUP" \
+      --exclude="$(basename "$PANEL_DIR")/node_modules" \
+      --exclude="$(basename "$PANEL_DIR")/vendor" \
+      --exclude="$(basename "$PANEL_DIR")/storage/logs" \
+      -C "$(dirname "$PANEL_DIR")" "$(basename "$PANEL_DIR")"; then
+    fail "Backup gagal, instalasi dibatalkan (panel belum diubah)."
+    rm -rf "$ST_TMP"; pause_clear; return 1
+  fi
+  ok_msg "Backup: $ST_BACKUP"
+
+  # ---------- Cek syntax PHP sebelum menimpa ----------
+  info_msg "Memeriksa syntax PHP tema..."
+  local PHP_OK=1
+  while IFS= read -r f; do
+    php -l "$f" >/dev/null 2>&1 || { err_msg "Syntax error: ${f#$ST_SRC/}"; PHP_OK=0; }
+  done < <(find "$ST_SRC" -name '*.php')
+  [ "$PHP_OK" -eq 1 ] || { fail "Install dibatalkan (syntax PHP error)."; rm -rf "$ST_TMP"; pause_clear; return 1; }
+
+  # ---------- Pasang ----------
+  info_msg "Memasang file tema..."
+  $SUDO php "$PANEL_DIR/artisan" down >/dev/null 2>&1
+  $SUDO cp -rfT "$ST_SRC" "$PANEL_DIR" || { fail "Gagal menyalin file tema."; $SUDO php "$PANEL_DIR/artisan" up; pause_clear; return 1; }
+  rm -rf "$ST_TMP"; rm -f "$ST_DL"
+
+  cd "$PANEL_DIR" || return 1
+
+  install_nodejs22
+  command -v yarn >/dev/null 2>&1 || $SUDO npm install -g yarn
+
+  info_msg "Install dependency frontend (react-feather sudah ada di package.json)..."
+  # yarn.lock lama tidak memuat react-feather, jadi JANGAN pakai --frozen-lockfile
+  if ! $SUDO yarn install; then
+    fail "yarn install gagal. Backup: $ST_BACKUP"; $SUDO php artisan up; pause_clear; return 1
+  fi
+
+  info_msg "Composer & migrasi database..."
+  $SUDO env COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction \
+    || { fail "composer install gagal. Backup: $ST_BACKUP"; $SUDO php artisan up; pause_clear; return 1; }
+  $SUDO php artisan migrate --force \
+    || { fail "Migrasi gagal. Backup: $ST_BACKUP"; $SUDO php artisan up; pause_clear; return 1; }
+
+  info_msg "Build frontend (beberapa menit)..."
+  # Node 22 memakai OpenSSL 3 + webpack 5, jadi TIDAK perlu --openssl-legacy-provider
+  if ! $SUDO yarn build:production; then
+    fail "Build frontend gagal. Backup: $ST_BACKUP"; $SUDO php artisan up; pause_clear; return 1
+  fi
+
+  clear_cache
+  $SUDO chown -R www-data:www-data "$PANEL_DIR"
+  $SUDO php artisan queue:restart >/dev/null 2>&1
+  $SUDO php artisan up
+
+  ok_msg "INSTALL SUCCESS"
+  echo "Theme   : Stellar (panel $(panel_version))"
+  echo "Backup  : $ST_BACKUP"
+  echo "Admin   : /admin/theme  (atur warna, logo, sosial media)"
+  echo "Catatan : tekan Ctrl+F5 di browser agar CSS/JS baru termuat."
+  pause_clear
+}
+
+# ============================================================
 #  INSTALL THEME
 # ============================================================
 install_theme() {
@@ -476,30 +638,19 @@ EOF
     return
   fi
 
-  # ===================== THEME LAMA (1-4) =====================
+  # ===================== STELLAR (baru) =====================
+  if [ "$SELECT_THEME" = "1" ]; then
+    install_stellar
+    return
+  fi
+
+  # ===================== THEME LAMA (2-4) =====================
   if [ -e "$USER_HOME/pterodactyl" ]; then
     $SUDO rm -rf "$USER_HOME/pterodactyl"
   fi
   cd "$USER_HOME" || return
   wget -q "$THEME_URL" -O "$USER_HOME/${THEME_NAME}.zip"
   $SUDO unzip -o "$USER_HOME/${THEME_NAME}.zip" -d "$USER_HOME/"
-
-  # ---------- STELLAR ----------
-  if [ "$SELECT_THEME" = "1" ]; then
-    banner "INSTALL THEME STELLAR                         "
-    $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
-    install_nodejs22
-    cd "$PANEL_DIR" || return
-    $SUDO yarn add react-feather
-    $SUDO php artisan migrate --force
-    $SUDO yarn build:production
-    $SUDO php artisan view:clear
-    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
-    $SUDO rm -rf "$USER_HOME/pterodactyl"
-    ok_msg "INSTALL SUCCESS"
-    pause_clear
-    return
-  fi
 
   # ---------- BILLING ----------
   if [ "$SELECT_THEME" = "2" ]; then
