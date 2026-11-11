@@ -500,6 +500,212 @@ install_stellar() {
 }
 
 # ============================================================
+#  INSTALL THEME ENIGMA (Panel 1.x terbaru / Node.js 22)
+#  Zip berisi: pterodactyl/ (overlay) + tools/ (patch & cek import).
+# ============================================================
+ENIGMA_ZIP_URL="https://github.com/Astra-Devl/installer/raw/refs/heads/main/theme/enigma.zip"
+ENIGMA_REQUIRED_VER="1.15.2"
+
+# Awali https:// bila belum ada; kosong -> '#'
+enigma_normalize_url() {
+  local u="$1"
+  u="${u#"${u%%[![:space:]]*}"}"   # trim kiri
+  u="${u%"${u##*[![:space:]]}"}"   # trim kanan
+  [ -z "$u" ] && { printf '#'; return 0; }
+  case "$u" in http://*|https://*) ;; *) u="https://$u" ;; esac
+  printf '%s' "$u"
+}
+
+# Tolak karakter yang bisa merusak file TSX / sed
+enigma_valid_url() {
+  [ "$1" = "#" ] && return 0
+  case "$1" in
+    *[[:space:]\'\"\\\`\$\<\>]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Escape untuk sisi pengganti sed (delimiter '|')
+enigma_sed_escape() { printf '%s' "$1" | sed -e 's/[\/&|\\]/\\&/g'; }
+
+enigma_ask_link() {   # $1 = label, $2 = nama variabel tujuan
+  local ans
+  while true; do
+    echo -ne "${YELLOW}Masukkan link $1 (kosongkan jika tidak ada) : ${NC}"
+    read -r ans
+    ans="$(enigma_normalize_url "$ans")"
+    if enigma_valid_url "$ans"; then
+      printf -v "$2" '%s' "$ans"
+      return 0
+    fi
+    err_msg "Link tidak valid (tanpa spasi, kutip, backslash, backtick, \$, < atau >)."
+  done
+}
+
+install_enigma() {
+  banner "INSTALL THEME ENIGMA (Panel ${ENIGMA_REQUIRED_VER}+ / Node 22)  "
+
+  # ---------- Cek panel ----------
+  if [ ! -f "$PANEL_DIR/artisan" ] || [ ! -f "$PANEL_DIR/routes/admin.php" ]; then
+    fail "Pterodactyl Panel tidak ditemukan di $PANEL_DIR."; pause_clear; return 1
+  fi
+  command -v unzip >/dev/null 2>&1 || $SUDO apt-get install -y unzip
+
+  # ---------- Cek versi panel (hanya seri 1.x, minimal ENIGMA_REQUIRED_VER) ----------
+  local CUR_PANEL
+  CUR_PANEL="$(panel_version)"
+  info_msg "Versi panel terdeteksi: ${CUR_PANEL:-tidak diketahui}"
+  if [[ "$CUR_PANEL" =~ ^([0-9]+)\. ]] && [ "${BASH_REMATCH[1]}" -ge 2 ]; then
+    fail "Panel $CUR_PANEL (seri 2.x) belum didukung tema Enigma. Gunakan panel 1.x."; pause_clear; return 1
+  fi
+  if ! [[ "$CUR_PANEL" =~ ^[0-9]+\.[0-9]+ ]] || ! version_ge "$CUR_PANEL" "$ENIGMA_REQUIRED_VER"; then
+    warn_msg "Tema ini butuh Pterodactyl Panel >= ${ENIGMA_REQUIRED_VER}."
+    echo -ne "${YELLOW}  Upgrade panel otomatis ke rilis resmi terbaru? [y/N] : ${NC}"
+    read -r UP_ANS
+    case "$UP_ANS" in
+      [Yy]*)
+        command -v composer >/dev/null 2>&1 || { fail "composer tidak ditemukan."; pause_clear; return 1; }
+        upgrade_panel_official || { fail "Upgrade panel gagal. Install tema dibatalkan."; pause_clear; return 1; } ;;
+      *) fail "Dibatalkan. Upgrade panel dulu, lalu ulangi."; pause_clear; return 1 ;;
+    esac
+  fi
+
+  # ---------- Node.js 22 dulu (skrip patch butuh node) ----------
+  install_nodejs22
+  command -v node >/dev/null 2>&1 || { fail "Node.js tidak tersedia."; pause_clear; return 1; }
+  command -v yarn >/dev/null 2>&1 || $SUDO npm install -g yarn >/dev/null 2>&1
+
+  # ---------- Link sosial ----------
+  local LINK_WA LINK_GROUP LINK_CHNL
+  enigma_ask_link "WhatsApp admin (https://wa.me/...)" LINK_WA
+  enigma_ask_link "grup (https://...)" LINK_GROUP
+  enigma_ask_link "channel (https://...)" LINK_CHNL
+
+  # ---------- Ambil zip tema ----------
+  local EN_TMP="$USER_HOME/enigma-tmp" EN_DL="$USER_HOME/enigma-download.zip" EN_ZIP="" EN_BACKUP=""
+  local EN_SRC_INPUT="${THEME_URL:-$ENIGMA_ZIP_URL}"
+
+  # Pemulihan bila gagal (fungsi ini hanya hidup selama install_enigma berjalan)
+  en_fail() {   # $1 = pesan, $2 = "rollback" untuk memulihkan file dari backup
+    err_msg "$1"
+    if [ "${2:-}" = "rollback" ] && [ -f "$EN_BACKUP" ]; then
+      warn_msg "Memulihkan file panel dari backup..."
+      $SUDO tar -xzf "$EN_BACKUP" -C "$(dirname "$PANEL_DIR")"
+      $SUDO chown -R www-data:www-data "$PANEL_DIR"
+    fi
+    [ -n "$EN_BACKUP" ] && info_msg "Backup: $EN_BACKUP"
+    $SUDO php "$PANEL_DIR/artisan" up >/dev/null 2>&1
+    rm -rf "$EN_TMP" "$EN_DL"
+    pause_clear
+  }
+
+  case "$EN_SRC_INPUT" in
+    http://*|https://*)
+      info_msg "Mengunduh zip tema..."
+      rm -f "$EN_DL"
+      wget -q --show-progress "$EN_SRC_INPUT" -O "$EN_DL" || { en_fail "Gagal mengunduh zip."; return 1; }
+      EN_ZIP="$EN_DL" ;;
+    *) EN_ZIP="$EN_SRC_INPUT" ;;
+  esac
+  if [ ! -s "$EN_ZIP" ] || ! unzip -tq "$EN_ZIP" >/dev/null 2>&1; then
+    en_fail "File zip tidak ada / tidak valid: $EN_ZIP"; return 1
+  fi
+
+  # ---------- Ekstrak & cari folder overlay + tools ----------
+  rm -rf "$EN_TMP"; mkdir -p "$EN_TMP"
+  unzip -oq "$EN_ZIP" -d "$EN_TMP" || { en_fail "Gagal mengekstrak zip."; return 1; }
+
+  local EN_SRC="" EN_TOOLS="" d
+  while IFS= read -r d; do
+    if [ -d "$d/resources/scripts" ] && [ -f "$(dirname "$d")/tools/apply-patches.mjs" ]; then
+      EN_SRC="$d"; EN_TOOLS="$(dirname "$d")/tools"; break
+    fi
+  done < <(find "$EN_TMP" -type d -name pterodactyl)
+  if [ -z "$EN_SRC" ]; then
+    en_fail "Zip bukan paket Enigma terbaru (butuh folder 'pterodactyl/' dan 'tools/'). Upload enigma-fixed.zip."; return 1
+  fi
+  local REQ
+  for REQ in "resources/scripts/assets/css/EnigmaPremium.ts" \
+             "resources/scripts/components/dashboard/DashboardContainer.tsx" \
+             "resources/scripts/components/server/health/ServerHealthContainer.tsx"; do
+    [ -f "$EN_SRC/$REQ" ] || { en_fail "File tema hilang di zip: $REQ"; return 1; }
+  done
+  [ -f "$EN_TOOLS/check-imports.mjs" ] || { en_fail "tools/check-imports.mjs hilang di zip."; return 1; }
+
+  # ---------- Isi link ke salinan tema (panel belum disentuh) ----------
+  local DASH="$EN_SRC/resources/scripts/components/dashboard/DashboardContainer.tsx"
+  sed -i \
+    -e "s|LINK_WA|$(enigma_sed_escape "$LINK_WA")|g" \
+    -e "s|LINK_GROUP|$(enigma_sed_escape "$LINK_GROUP")|g" \
+    -e "s|LINK_CHNL|$(enigma_sed_escape "$LINK_CHNL")|g" "$DASH"
+  if grep -qE "LINK_(WA|GROUP|CHNL)" "$DASH"; then
+    en_fail "Placeholder link masih tersisa di DashboardContainer.tsx."; return 1
+  fi
+
+  # ---------- Cek syntax PHP ----------
+  info_msg "Memeriksa syntax PHP tema..."
+  local PHP_OK=1 f
+  while IFS= read -r f; do
+    php -l "$f" >/dev/null 2>&1 || { err_msg "Syntax error: ${f#$EN_SRC/}"; PHP_OK=0; }
+  done < <(find "$EN_SRC" -name '*.php')
+  [ "$PHP_OK" -eq 1 ] || { en_fail "Install dibatalkan (syntax PHP error)."; return 1; }
+
+  # ---------- Backup ----------
+  EN_BACKUP="$USER_HOME/panel-backup-enigma-$(date +%Y%m%d-%H%M%S).tar.gz"
+  info_msg "Membuat backup panel (tanpa node_modules/vendor)..."
+  if ! $SUDO tar -czf "$EN_BACKUP" \
+      --exclude="$(basename "$PANEL_DIR")/node_modules" \
+      --exclude="$(basename "$PANEL_DIR")/vendor" \
+      --exclude="$(basename "$PANEL_DIR")/storage/logs" \
+      -C "$(dirname "$PANEL_DIR")" "$(basename "$PANEL_DIR")"; then
+    en_fail "Backup gagal, instalasi dibatalkan (panel belum diubah)."; return 1
+  fi
+  ok_msg "Backup: $EN_BACKUP"
+
+  # ---------- Pasang ----------
+  info_msg "Memasang file tema..."
+  $SUDO php "$PANEL_DIR/artisan" down >/dev/null 2>&1
+  $SUDO cp -rfT "$EN_SRC" "$PANEL_DIR" || { en_fail "Gagal menyalin file tema." rollback; return 1; }
+
+  info_msg "Memasang patch file inti (routes, getServer, transformer, tailwind)..."
+  if ! $SUDO node "$EN_TOOLS/apply-patches.mjs" "$PANEL_DIR"; then
+    en_fail "Patch file inti gagal (lihat baris [GAGAL] di atas)." rollback; return 1
+  fi
+
+  info_msg "Memeriksa import frontend..."
+  if ! $SUDO node "$EN_TOOLS/check-imports.mjs" "$PANEL_DIR"; then
+    en_fail "Ada import yang tidak cocok dengan versi panel ini (lihat baris [HILANG])." rollback; return 1
+  fi
+  rm -rf "$EN_TMP"; rm -f "$EN_DL"
+
+  # ---------- Frontend ----------
+  cd "$PANEL_DIR" || { en_fail "Tidak bisa masuk ke $PANEL_DIR." rollback; return 1; }
+
+  info_msg "Install dependency frontend..."
+  $SUDO yarn install --frozen-lockfile || $SUDO yarn install \
+    || { en_fail "yarn install gagal." rollback; return 1; }
+
+  info_msg "Build frontend (beberapa menit)..."
+  if ! $SUDO yarn build:production; then
+    warn_msg "Build gagal, mencoba ulang dengan --openssl-legacy-provider..."
+    $SUDO env NODE_OPTIONS=--openssl-legacy-provider yarn build:production \
+      || { en_fail "Build frontend gagal." rollback; return 1; }
+  fi
+
+  clear_cache
+  $SUDO chown -R www-data:www-data "$PANEL_DIR"
+  $SUDO php artisan queue:restart >/dev/null 2>&1
+  $SUDO php artisan up
+
+  ok_msg "INSTALL SUCCESS"
+  echo "Theme   : Enigma (panel $(panel_version), Node $(node -v))"
+  echo "Fitur   : menu Health di setiap server"
+  echo "Backup  : $EN_BACKUP"
+  echo "Catatan : tekan Ctrl+F5 di browser agar CSS/JS baru termuat."
+  pause_clear
+}
+
+# ============================================================
 #  INSTALL THEME
 # ============================================================
 install_theme() {
@@ -644,7 +850,13 @@ EOF
     return
   fi
 
-  # ===================== THEME LAMA (2-4) =====================
+  # ===================== ENIGMA (baru) =====================
+  if [ "$SELECT_THEME" = "3" ]; then
+    install_enigma
+    return
+  fi
+
+  # ===================== THEME LAMA (2 dan 4) =====================
   if [ -e "$USER_HOME/pterodactyl" ]; then
     $SUDO rm -rf "$USER_HOME/pterodactyl"
   fi
@@ -667,38 +879,6 @@ EOF
     $SUDO rm -rf "$USER_HOME/pterodactyl"
     ok_msg "INSTALL SUCCESS"
     pause_clear
-    return
-  fi
-
-  # ---------- ENIGMA ----------
-  if [ "$SELECT_THEME" = "3" ]; then
-    banner "INSTALL THEME ENIGMA                          "
-    echo -e "${YELLOW}Masukkan link wa (https://wa.me...) : ${NC}"
-    read -r LINK_WA
-    echo -e "${YELLOW}Masukkan link group (https://.....) : ${NC}"
-    read -r LINK_GROUP
-    echo -e "${YELLOW}Masukkan link channel (https://...) : ${NC}"
-    read -r LINK_CHNL
-
-    DASH_FILE="$USER_HOME/pterodactyl/resources/scripts/components/dashboard/DashboardContainer.tsx"
-    if [ -f "$DASH_FILE" ]; then
-      $SUDO sed -i "s|LINK_WA|$LINK_WA|g" "$DASH_FILE"
-      $SUDO sed -i "s|LINK_GROUP|$LINK_GROUP|g" "$DASH_FILE"
-      $SUDO sed -i "s|LINK_CHNL|$LINK_CHNL|g" "$DASH_FILE"
-    fi
-
-    $SUDO cp -rfT "$USER_HOME/pterodactyl" "$PANEL_DIR"
-    install_nodejs22
-    cd "$PANEL_DIR" || return
-    $SUDO yarn add react-feather
-    $SUDO php artisan migrate --force
-    $SUDO yarn build:production
-    $SUDO php artisan view:clear
-    $SUDO rm -f "$USER_HOME/${THEME_NAME}.zip"
-    $SUDO rm -rf "$USER_HOME/pterodactyl"
-    ok_msg "INSTALL SUCCESS"
-    sleep 3
-    clear
     return
   fi
 
